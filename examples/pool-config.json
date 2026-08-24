@@ -1,0 +1,17 @@
+{
+  "core_pool_size": 2,
+  "maximum_pool_size": 8,
+  "keep_alive_time": 30,
+  "time_unit": "seconds",
+  "work_queue": {
+    "type": "bounded",
+    "capacity": 128
+  },
+  "process_factory": {
+    "program": "./target/debug/echo-worker",
+    "args": [],
+    "env": {},
+    "current_dir": null
+  },
+  "rejected_execution_handler": "abort"
+}
