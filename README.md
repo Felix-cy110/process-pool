@@ -58,10 +58,10 @@ cargo build --bins
 cargo run --bin process-pool-server -- --config examples/pool-config.json
 ```
 
-默认只监听 `127.0.0.1:3000`。另开一个终端提交任务：
+默认只监听 `127.0.0.1:7788`。另开一个终端提交任务：
 
 ```bash
-curl -sS http://127.0.0.1:3000/rpc \
+curl -sS http://127.0.0.1:7788/rpc \
   -H 'content-type: application/json' \
   -d '{
     "jsonrpc":"2.0",
@@ -82,7 +82,7 @@ curl -sS http://127.0.0.1:3000/rpc \
 查询池状态：
 
 ```bash
-curl -sS http://127.0.0.1:3000/rpc \
+curl -sS http://127.0.0.1:7788/rpc \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":2,"method":"pool.stats","params":{}}'
 ```
@@ -90,8 +90,8 @@ curl -sS http://127.0.0.1:3000/rpc \
 健康与就绪接口：
 
 ```bash
-curl -sS http://127.0.0.1:3000/healthz
-curl -sS http://127.0.0.1:3000/readyz
+curl -sS http://127.0.0.1:7788/healthz
+curl -sS http://127.0.0.1:7788/readyz
 ```
 
 ## 接入自己的 worker

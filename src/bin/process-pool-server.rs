@@ -20,7 +20,7 @@ struct Args {
     #[arg(long, default_value = "examples/pool-config.json")]
     config: PathBuf,
 
-    #[arg(long, default_value = "127.0.0.1:3000")]
+    #[arg(long, default_value = "127.0.0.1:7788")]
     listen: SocketAddr,
 
     /// Per-call timeout used when `timeout_ms` is absent from RPC params.
