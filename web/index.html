@@ -36,18 +36,26 @@
       <section class="hero">
         <div>
           <p class="eyebrow">LIVE RUNTIME / 本机实例</p>
-          <h1>进程池监控与调试</h1>
-          <p class="hero-copy">每秒采集 worker、队列和任务执行指标。数据直接来自当前 Rust supervisor，不经过外部监控服务。</p>
+          <h1 id="page-title">进程池运行监控</h1>
+          <p class="hero-copy" id="page-description">每秒采集 worker、队列和任务执行指标。初始化与任务投放请切换至接口调试。</p>
         </div>
         <div class="hero-actions">
-          <button class="button button-ghost" id="prestart-button" type="button" disabled>预热核心进程</button>
           <button class="button button-ghost" id="pause-button" type="button">暂停刷新</button>
           <button class="button button-primary" id="refresh-button" type="button">立即刷新</button>
         </div>
       </section>
 
+      <div class="workspace-tabs" role="tablist" aria-label="进程池功能">
+        <button id="monitor-tab" type="button" role="tab" aria-controls="monitor-view" aria-selected="true" tabindex="0">运行监控</button>
+        <button id="debug-tab" type="button" role="tab" aria-controls="debug-view" aria-selected="false" tabindex="-1">接口调试</button>
+      </div>
+
+      <section id="debug-view" role="tabpanel" aria-labelledby="debug-tab" tabindex="0" hidden>
       <section class="panel initialization-panel" aria-labelledby="initialization-title">
-        <h2 id="initialization-title">初始化进程池</h2>
+        <div class="initialization-heading">
+          <h2 id="initialization-title">初始化进程池</h2>
+          <button class="button button-ghost" id="prestart-button" type="button" disabled>预热核心进程</button>
+        </div>
         <p id="initialization-status" role="status">正在读取服务状态…</p>
         <form id="initialization-form" hidden>
           <p class="form-note">服务已启动，但尚未创建进程池，当前 worker 为 0。以下是可修改的示例值，只有点击初始化才会提交；初始化本身也不会启动 worker。</p>
@@ -131,6 +139,14 @@
         </div>
       </section>
 
+      </section>
+
+      <section id="monitor-view" role="tabpanel" aria-labelledby="monitor-tab" tabindex="0">
+      <section class="panel monitor-empty" id="monitor-empty" aria-labelledby="monitor-empty-title">
+        <h2 id="monitor-empty-title">等待进程池就绪</h2>
+        <p class="form-note" id="monitor-empty-message">正在读取服务状态…</p>
+        <button class="button button-primary" id="open-debug-button" type="button">前往接口调试并初始化</button>
+      </section>
       <div id="runtime-panels" hidden>
       <section class="overview" aria-label="进程池核心指标">
         <article class="utilization-card panel">
@@ -269,6 +285,7 @@
         </aside>
       </section>
       </div>
+      </section>
     </main>
 
     <footer>

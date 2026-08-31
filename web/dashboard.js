@@ -61,12 +61,56 @@
     runtimePanels: byId("runtime-panels"),
     prestartButton: byId("prestart-button"),
     debugPoolState: byId("debug-pool-state"),
+    monitorTab: byId("monitor-tab"),
+    debugTab: byId("debug-tab"),
+    monitorView: byId("monitor-view"),
+    debugView: byId("debug-view"),
+    monitorEmpty: byId("monitor-empty"),
+    monitorEmptyMessage: byId("monitor-empty-message"),
+    openDebugButton: byId("open-debug-button"),
+    pageTitle: byId("page-title"),
+    pageDescription: byId("page-description"),
   };
+
+  function showTab(name, { focus = false, syncHash = true } = {}) {
+    const isDebug = name === "debug";
+    elements.debugView.hidden = !isDebug;
+    elements.monitorView.hidden = isDebug;
+    elements.debugTab.setAttribute("aria-selected", String(isDebug));
+    elements.monitorTab.setAttribute("aria-selected", String(!isDebug));
+    elements.debugTab.tabIndex = isDebug ? 0 : -1;
+    elements.monitorTab.tabIndex = isDebug ? -1 : 0;
+    elements.pageTitle.textContent = isDebug ? "进程池接口调试" : "进程池运行监控";
+    elements.pageDescription.textContent = isDebug
+      ? "在此初始化、预热和投放任务。切换回运行监控不会中断请求，也不会清空调试记录。"
+      : "每秒采集 worker、队列和任务执行指标。初始化与任务投放请切换至接口调试。";
+    if (focus) (isDebug ? elements.debugTab : elements.monitorTab).focus();
+    if (!isDebug) drawChart();
+    const hash = isDebug ? "#debug" : "#monitor";
+    if (syncHash && window.location.hash !== hash) window.location.hash = hash;
+  }
+
+  [elements.monitorTab, elements.debugTab].forEach((tab, index) => {
+    tab.addEventListener("click", () => showTab(index === 1 ? "debug" : "monitor"));
+    tab.addEventListener("keydown", (event) => {
+      let target;
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") target = 1 - index;
+      else if (event.key === "Home") target = 0;
+      else if (event.key === "End") target = 1;
+      else return;
+      event.preventDefault();
+      showTab(target === 1 ? "debug" : "monitor", { focus: true });
+    });
+  });
+  elements.openDebugButton.addEventListener("click", () => showTab("debug", { focus: true }));
+  window.addEventListener("hashchange", () => showTab(window.location.hash === "#debug" ? "debug" : "monitor", { syncHash: false }));
 
   function showLifecycle(isInitialized) {
     initialized = isInitialized;
     elements.initializationForm.hidden = initialized;
     elements.runtimePanels.hidden = !initialized;
+    elements.monitorEmpty.hidden = initialized;
+    if (!initialized) elements.monitorEmptyMessage.textContent = "服务在线，但尚未初始化进程池。请前往接口调试填写七个参数；初始化后，这里将显示运行状态。";
     elements.initializationFields.disabled = !factoriesReady || changingPool || debugging || initialized;
     elements.prestartButton.disabled = !initialized || changingPool || debugging;
     debuggerUi?.setBusy(changingPool);
@@ -397,6 +441,7 @@
       if (generation !== stateGeneration) return;
       setConnection("offline", "连接中断");
       elements.debugPoolState.textContent = "进程池状态读取失败，显示的调用记录仅代表此前响应。";
+      if (!initialized) elements.monitorEmptyMessage.textContent = "暂时无法读取进程池状态，请确认服务已启动后重试。";
       if (!events[0] || events[0].message !== "无法读取进程池状态") {
         addEvent("无法读取进程池状态", "bad");
       }
@@ -459,6 +504,7 @@
   });
 
   new ResizeObserver(drawChart).observe(elements.chart);
+  showTab(window.location.hash === "#debug" ? "debug" : "monitor", { syncHash: false });
   elements.connectionEndpoint.textContent = window.location.host;
   loadFactories();
   refresh();

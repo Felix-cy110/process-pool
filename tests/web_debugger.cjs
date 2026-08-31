@@ -85,7 +85,8 @@ class Element {
   set innerHTML(_) { throw new Error("Do not render RPC content through innerHTML"); }
   addEventListener(name, listener) { (this.listeners[name] ??= []).push(listener); }
   reportValidity() { return this.valid; }
-  dispatch(name) { return Promise.all((this.listeners[name] || []).map((listener) => listener({ preventDefault() {} }))); }
+  focus() { this.focused = true; }
+  dispatch(name, properties = {}) { return Promise.all((this.listeners[name] || []).map((listener) => listener({ preventDefault() {}, ...properties }))); }
 }
 
 function setup(fetchImpl) {
@@ -192,7 +193,7 @@ test("every existing dashboard binding still points to an HTML element", () => {
   assert.ok(html.indexOf('/assets/debugger.js') < html.indexOf('/assets/dashboard.js'));
 });
 
-test("full dashboard wiring connects guided initialization, debugger history, and live polling", async () => {
+async function setupFullDashboard(initialHash = "") {
   const html = readFileSync(path.join(__dirname, "../web/index.html"), "utf8");
   const nodes = new Map([...html.matchAll(/id="([^"]+)"/g)].map(([, id]) => [id, new Element()]));
   for (const node of nodes.values()) {
@@ -209,7 +210,10 @@ test("full dashboard wiring connects guided initialization, debugger history, an
   let poll;
   const sent = [];
   const doc = { getElementById: (id) => nodes.get(id), createElement: () => new Element() };
-  const context = vm.createContext({ document: doc, window: { location: { host: "127.0.0.1:test" }, setInterval(fn) { poll = fn; } },
+  const windowEvents = new Map();
+  const browserWindow = { location: { host: "127.0.0.1:test", hash: initialHash },
+    setInterval(fn) { poll = fn; }, addEventListener(name, listener) { windowEvents.set(name, listener); } };
+  const context = vm.createContext({ document: doc, window: browserWindow,
     ResizeObserver: class { observe() {} }, AbortController, AbortSignal, TextEncoder, performance, setTimeout, clearTimeout,
     fetch: async (url, options) => {
       if (url === "/api/factories") return Response.json({ factories: ["echo"] });
@@ -239,6 +243,18 @@ test("full dashboard wiring connects guided initialization, debugger history, an
   }
   const flush = () => new Promise((resolve) => setImmediate(resolve));
   await flush();
+  return { nodes, sent, flush, poll, releaseTask: () => releaseTask(), browserWindow, windowEvents };
+}
+
+test("tab switching preserves in-flight requests, input, history, and live polling", async () => {
+  const { nodes, sent, flush, poll, releaseTask, browserWindow } = await setupFullDashboard();
+  assert.equal(nodes.get("monitor-view").hidden, false);
+  assert.equal(nodes.get("debug-view").hidden, true);
+  assert.equal(nodes.get("monitor-empty").hidden, false);
+  await nodes.get("open-debug-button").dispatch("click");
+  assert.equal(browserWindow.location.hash, "#debug");
+  assert.equal(nodes.get("monitor-view").hidden, true);
+  assert.equal(nodes.get("debug-view").hidden, false);
   assert.equal(nodes.get("initialization-form").hidden, false);
   assert.equal(nodes.get("initialization-fields").disabled, false);
   await nodes.get("initialization-form").dispatch("submit");
@@ -247,17 +263,84 @@ test("full dashboard wiring connects guided initialization, debugger history, an
   assert.equal(sent[0].params.process_factory, "echo");
   assert.equal(nodes.get("initialization-form").hidden, true);
   assert.equal(nodes.get("runtime-panels").hidden, false);
+  assert.equal(nodes.get("monitor-empty").hidden, true);
+  assert.equal(nodes.get("monitor-view").hidden, true, "Initializing must not move the user away from debugging");
   assert.equal(nodes.get("debug-history").children.length, 1);
 
+  const input = nodes.get("debug-params").value;
   const task = nodes.get("debug-form").dispatch("submit");
   assert.equal(nodes.get("prestart-button").disabled, true);
+  await nodes.get("monitor-tab").dispatch("click");
+  assert.equal(nodes.get("debug-view").hidden, true);
+  assert.equal(nodes.get("monitor-view").hidden, false);
   await poll();
   assert.match(nodes.get("debug-pool-state").textContent, /忙碌 1/);
   releaseTask();
   await task;
   await flush();
+  assert.equal(nodes.get("debug-view").hidden, true, "A completed request must not change the active tab");
+  await nodes.get("debug-tab").dispatch("click");
+  assert.equal(nodes.get("debug-view").hidden, false);
+  assert.equal(nodes.get("debug-params").value, input);
+  assert.equal(sent.length, 2, "Switching tabs must not reinitialize or resubmit");
   assert.equal(nodes.get("debug-history").children.length, 2);
   assert.equal(nodes.get("prestart-button").disabled, false);
   assert.match(nodes.get("debug-pool-state").textContent, /空闲 1/);
   assert.equal(JSON.parse(nodes.get("debug-response").textContent).result.pid, 42);
+});
+
+test("tab deep links, hash navigation, and keyboard selection stay synchronized", async () => {
+  const { nodes, sent, browserWindow, windowEvents } = await setupFullDashboard("#debug");
+  assert.equal(nodes.get("debug-view").hidden, false);
+  assert.equal(nodes.get("debug-tab").attributes["aria-selected"], "true");
+  assert.equal(nodes.get("debug-tab").tabIndex, 0);
+  assert.equal(nodes.get("monitor-tab").tabIndex, -1);
+  browserWindow.location.hash = "#monitor";
+  windowEvents.get("hashchange")();
+  assert.equal(nodes.get("monitor-view").hidden, false);
+  assert.equal(nodes.get("debug-tab").attributes["aria-selected"], "false");
+  await nodes.get("monitor-tab").dispatch("keydown", { key: "ArrowRight" });
+  assert.equal(browserWindow.location.hash, "#debug");
+  assert.equal(nodes.get("debug-tab").focused, true);
+  await nodes.get("debug-tab").dispatch("keydown", { key: "Home" });
+  assert.equal(browserWindow.location.hash, "#monitor");
+  assert.equal(nodes.get("monitor-tab").focused, true);
+  await nodes.get("monitor-tab").dispatch("keydown", { key: "End" });
+  assert.equal(browserWindow.location.hash, "#debug");
+  await nodes.get("debug-tab").dispatch("keydown", { key: "ArrowLeft" });
+  assert.equal(browserWindow.location.hash, "#monitor");
+  browserWindow.location.hash = "#unrecognized";
+  windowEvents.get("hashchange")();
+  assert.equal(nodes.get("monitor-view").hidden, false);
+  assert.equal(nodes.get("debug-view").hidden, true);
+  assert.equal(sent.length, 0);
+});
+
+test("HTML keeps all mutating controls in the debug panel and metrics in the monitor panel", () => {
+  const html = readFileSync(path.join(__dirname, "../web/index.html"), "utf8");
+  const stack = [];
+  const ancestors = new Map();
+  const voidTags = new Set(["meta", "link", "input", "br", "hr", "img"]);
+  for (const match of html.matchAll(/<(\/?)([a-z][\w-]*)([^>]*)>/gi)) {
+    const [, closing, tag, attributes] = match;
+    if (closing) {
+      assert.equal(stack.pop()?.tag, tag, `Unbalanced closing tag ${tag}`);
+    } else {
+      const id = attributes.match(/\bid="([^"]+)"/)?.[1];
+      if (id) {
+        assert.ok(!ancestors.has(id), `Duplicate id ${id}`);
+        ancestors.set(id, stack.map((entry) => entry.id));
+      }
+      if (!voidTags.has(tag)) stack.push({ tag, id });
+    }
+  }
+  assert.equal(stack.length, 0);
+  for (const id of ["initialization-form", "prestart-button", "debug-form", "debug-history"]) {
+    assert.ok(ancestors.get(id).includes("debug-view"));
+    assert.ok(!ancestors.get(id).includes("monitor-view"));
+  }
+  for (const id of ["runtime-panels", "load-chart", "worker-rows"]) {
+    assert.ok(ancestors.get(id).includes("monitor-view"));
+    assert.ok(!ancestors.get(id).includes("debug-view"));
+  }
 });

@@ -32,6 +32,15 @@
 .initialization-grid input, .initialization-grid select { font: inherit; font-size: 14px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--bg); color: var(--text); padding: 11px; width: 100%; }
 .initialization-grid input:focus-visible, .initialization-grid select:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 .hero-actions { flex-wrap: wrap; }
+.workspace-tabs { display: flex; gap: 8px; padding-bottom: 12px; margin-bottom: 24px; border-bottom: 1px solid var(--line); }
+.workspace-tabs button { min-height: 44px; padding: 0 22px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: var(--muted); cursor: pointer; }
+.workspace-tabs button:hover { color: var(--text); background: var(--panel); }
+.workspace-tabs button[aria-selected="true"] { color: var(--lime); border-color: rgba(187, 244, 81, 0.28); background: rgba(187, 244, 81, 0.08); }
+.workspace-tabs button:focus-visible, [role="tabpanel"]:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+.initialization-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.initialization-heading h2 { margin: 0; }
+.monitor-empty { padding: 28px; }
+.monitor-empty h2 { margin: 0; font-size: 18px; }
 
 .debug-panel { padding: 24px; margin-bottom: 24px; }
 .debug-panel fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
