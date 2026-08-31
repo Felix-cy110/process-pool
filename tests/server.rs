@@ -103,6 +103,29 @@ async fn startup_is_uninitialized_but_http_and_factory_catalog_are_available() {
 }
 
 #[tokio::test]
+async fn cc_management_is_opt_in_for_embedded_server_state() {
+    let (state, app) = setup();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/rpc")
+                .header("content-type", "application/json")
+                .header("host", "127.0.0.1:7788")
+                .body(Body::from(
+                    json!({"jsonrpc":"2.0","id":1,"method":"cc.status","params":{}}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let result: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
+    assert_eq!(result["result"]["enabled"], false);
+    state.shutdown().await;
+}
+
+#[tokio::test]
 async fn supplied_parameters_take_effect_without_workers_until_execute_or_prewarm() {
     let (state, app) = setup();
     let result = rpc(&app, "pool.initialize", parameters()).await;

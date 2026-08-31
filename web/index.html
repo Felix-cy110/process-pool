@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="/assets/dashboard.css" />
     <script src="/assets/rpc-client.js" defer></script>
     <script src="/assets/debugger.js" defer></script>
+    <script src="/assets/agents.js" defer></script>
     <script src="/assets/dashboard.js" defer></script>
   </head>
   <body>
@@ -48,6 +49,7 @@
       <div class="workspace-tabs" role="tablist" aria-label="进程池功能">
         <button id="monitor-tab" type="button" role="tab" aria-controls="monitor-view" aria-selected="true" tabindex="0">运行监控</button>
         <button id="debug-tab" type="button" role="tab" aria-controls="debug-view" aria-selected="false" tabindex="-1">接口调试</button>
+        <button id="agents-tab" type="button" role="tab" aria-controls="agents-view" aria-selected="false" tabindex="-1">Agent 调试（CC）</button>
       </div>
 
       <section id="debug-view" role="tabpanel" aria-labelledby="debug-tab" tabindex="0" hidden>
@@ -285,6 +287,53 @@
         </aside>
       </section>
       </div>
+      </section>
+      <section id="agents-view" role="tabpanel" aria-labelledby="agents-tab" tabindex="0" hidden>
+        <section class="panel cc-setup">
+          <div class="panel-heading">
+            <div><span class="section-kicker">LOCAL CLAUDE CODE</span><h2>Agent 工作空间</h2></div>
+            <button id="cc-prepare" class="button button-ghost" type="button">准备 conduit 项目</button>
+          </div>
+          <p class="form-note">使用你本机已安装并登录的 Claude Code，无需额外注册中心。每个 Agent 独占一个工作副本和常驻进程；发送多轮消息复用同一 PID 与上下文。</p>
+          <p id="cc-environment" role="status">进入选项卡后读取环境状态…</p>
+          <p id="cc-repository" class="cc-path"></p>
+          <p class="form-note">会克隆 cogwheel0/conduit，不安装项目依赖、不自动拉取更新。管理会话禁用 hooks、插件及项目定制；工具请求遵循本机权限规则，需要询问时在下方由你确认。这不是沙箱。</p>
+          <p id="cc-message" class="cc-message" role="status" aria-live="polite"></p>
+        </section>
+        <div class="cc-layout">
+          <aside class="panel cc-sidebar" aria-label="Claude Code 进程列表">
+            <h2>CC 进程</h2>
+            <form id="cc-create-form" class="cc-create-form">
+              <label for="cc-label">Agent 名称（可选）</label>
+              <input id="cc-label" maxlength="80" placeholder="例如：分析项目结构" autocomplete="off" />
+              <button id="cc-create" class="button button-primary" type="submit" disabled>新建 CC Agent</button>
+            </form>
+            <div id="cc-list" class="cc-list"></div>
+          </aside>
+          <section class="panel cc-conversation" aria-label="Agent 会话调试">
+            <div id="cc-empty" class="cc-empty"><span class="section-kicker">ONE PROCESS · ONE SESSION</span><h2>选择一个 Agent，开始调试</h2><p class="form-note">左侧新建进程后，在这里发送提示词、查看输出和审批工具调用。普通进程池不需要先初始化。</p></div>
+            <div id="cc-session" hidden>
+              <div class="panel-heading"><div><h2 id="cc-title">Agent</h2><p id="cc-identity" class="form-note"></p></div></div>
+              <dl class="cc-metadata"><dt>项目目录</dt><dd id="cc-cwd"></dd><dt>Claude 会话</dt><dd id="cc-session-id"></dd></dl>
+              <div class="cc-actions">
+                <button id="cc-interrupt" class="button button-ghost" type="button" disabled>中断当前任务</button>
+                <button id="cc-stop" class="button button-ghost" type="button" disabled>停止进程</button>
+                <button id="cc-restart" class="button button-ghost" type="button" disabled>重新启动并恢复会话</button>
+              </div>
+              <p class="form-note">中断保留进程；停止终止该 Agent 及其受管子进程。文件不会删除，停止后可重新启动。服务重启后不自动重建列表。</p>
+              <p id="cc-last-error" class="cc-error"></p>
+              <div id="cc-permissions" class="cc-permissions"></div>
+              <label class="section-kicker" for="cc-output">会话输出 · 最近事件</label>
+              <pre id="cc-output" class="cc-output" tabindex="0">等待对话输出…</pre>
+              <pre id="cc-stream" class="cc-stream" aria-label="正在生成的内容"></pre>
+              <form id="cc-send-form" class="cc-send-form">
+                <label for="cc-prompt">提示词</label>
+                <textarea id="cc-prompt" rows="4" placeholder="例如：只阅读代码，解释这个项目的主要目录，不修改文件。" disabled></textarea>
+                <div class="cc-send-footer"><span class="form-note">每个 Agent 同时执行一轮；实际调用使用你本机的 Claude 账户额度。</span><button id="cc-send" class="button button-primary" type="submit" disabled>发送给此 Agent</button></div>
+              </form>
+            </div>
+          </section>
+        </div>
       </section>
     </main>
 

@@ -72,7 +72,7 @@ cargo run --bin process-pool-server
 http://127.0.0.1:7788/
 ```
 
-页面按“运行监控”和“接口调试”两个选项卡分开，默认进入运行监控。未初始化时，监控页提供前往调试页的入口；七参数表单和预热按钮位于接口调试中。初始化后 worker 仍为 0，提交任务后按需创建，或点击“预热核心进程”补齐到核心数。切换回运行监控即可查看指标。
+页面按“运行监控”“接口调试”和“Agent 调试（CC）”三个选项卡分开，默认进入运行监控。未初始化时，监控页提供前往调试页的入口；七参数表单和预热按钮位于接口调试中。初始化后 worker 仍为 0，提交任务后按需创建，或点击“预热核心进程”补齐到核心数。切换回运行监控即可查看指标。CC 是单独的有状态会话管理，不计入普通 worker 监控指标。
 
 监控面板每秒读取一次本机进程池状态，展示：
 
@@ -102,6 +102,50 @@ http://127.0.0.1:7788/
 JSON 参数编辑框限制为 64 KiB。`timeout_ms` 是 worker 的任务执行超时，不含排队等待；Web 的“HTTP 等待上限”控制整个请求的等待时间（含排队，默认 60 秒，最多 300 秒）。HTTP 超时或断网只能说明结果未确认，不代表服务端任务已取消；请先查询池状态，不要直接重复提交有副作用的任务。
 
 调试功能会真实改变当前实例的进程和任务状态，不要对正在处理重要业务的池随意批量投放。工厂仍然只能选择服务端登记的名称，不能通过 Web 输入任意系统命令。当前不提供运行中热修改参数、任意新增单个 worker 或强制终止指定进程的管理接口。
+
+### Agent 调试（CC）
+
+前提：用户已经在本机安装并登录 Claude Code，且终端中 `claude --version` 正常。本服务**不安装 CLI、不代登录、不收集 API Key、不更改用户的 Claude 配置**；启动服务不会自动启动 CC，也不会发送提示词。
+
+打开 `http://127.0.0.1:7788/#agents`，无需先初始化普通进程池：
+
+1. 点击“准备 conduit 项目”：检测本机 CLI，并将固定仓库 `https://github.com/cogwheel0/conduit.git` 克隆至 `.agent-workspaces/conduit`。已有同源仓库会复用，不 pull、不覆盖文件、不安装项目依赖。
+2. 输入可选名称，点击“新建 CC Agent”：从基础仓库的当前 HEAD 建立独立 detached Git worktree，位于 `.agent-workspaces/agents/<agent-id>/conduit`，并在其中启动真实 `claude` 子进程。多 Agent 共用 Git 对象，但文件互相隔离，不会在同一目录里并发改代码。
+3. 选择 Agent 后发送提示词，查看 PID、会话 ID、工作目录、忙闲状态、成功/失败轮数和输出。连续多轮复用同一个 CC 进程与上下文；每个 Agent 同时只接受一轮，忙碌时拒绝新请求，不隐式排队或重试。
+4. CC 发出工具权限请求时，在页面查看工具及原始参数，并选择“拒绝”或“仅允许这一次”。不会自动批准、修改工具参数或写入永久授权。CLI 已有权限规则允许的操作可能不再询问。
+5. “中断当前任务”保留进程；“停止进程”结束受管进程组并回收子进程。停止后点击“重新启动并恢复会话”，使用相同目录及已获取的 Claude 会话 ID（`--resume`）；PID 会变化。尚无会话 ID 时创建新会话。恢复失败会明确报错，不会偷偷切换成新会话。
+
+这里没有把 CC 伪装成 echo worker。普通七参数池是无状态任务调度，CC 是有状态会话进程：通过 `agent_id` 定向投放，避免多个用户的上下文串在一起。当前不提供 CC 的自动扩缩容、排队或跨进程会话迁移；CC 并发上限由服务启动参数配置，与普通池的七参数独立。
+
+可复制的启动命令（先在旧服务终端 Ctrl+C；不带 `--config`）：
+
+```bash
+(cd /Users/chenyang/process-pool && cargo run --bin process-pool-server -- --listen 127.0.0.1:7788 --max-cc-agents 4)
+```
+
+可选本地配置：`--claude-program /绝对路径/claude`、`--agent-workspace-root /绝对路径/工作空间`。`--max-cc-agents` 默认为 4，可设为 1–64；不会预创建这些进程。程序从服务的 PATH 查找 `claude`，无法启动时请核对服务进程的 PATH，而不是让 Web 传任意命令。
+
+管理接口仍为同源 `POST /rpc`：
+
+| 方法 | `params` | 用途 |
+| --- | --- | --- |
+| `cc.status` | `{}` | 配置、仓库状态及所有 Agent 快照 |
+| `cc.prepare` | `{}` | 检查本机 CLI、准备固定仓库 |
+| `cc.create` | `{"label":"项目分析"}` | 新建独立工作副本并启动 Agent；label 可省略 |
+| `cc.get` | `{"agent_id":"cc-…","after_event_id":0}` | 单个 Agent、增量事件、cursor 和截断标志 |
+| `cc.send` | `{"agent_id":"cc-…","generation":1,"prompt":"解释项目结构，不修改文件"}` | 开始一轮对话，立即确认接收，通过 get 取结果 |
+| `cc.permission` | `{"agent_id":"cc-…","generation":1,"request_id":"…","allow":false}` | 明确允许一次或拒绝权限请求 |
+| `cc.interrupt` / `cc.stop` / `cc.restart` | `{"agent_id":"cc-…","generation":1}` | 中断任务、停止、重新启动 |
+
+`agent_id` 和 `generation` 从返回值获取；restart 会增加 generation，过期操作会被拒绝。CC 业务错误码为 `-32100`，访问限制为 `-32101`。Web 不接受可执行命令、仓库 URL、目录、环境变量或裸 PID。普通 `pool.*` 接口保持不变。
+
+边界与安全：
+
+- CC 功能仅在 loopback 地址监听时启用，并校验本机 Host、同源 Origin / Fetch Metadata；没有远程鉴权，**不要通过反向代理、隧道或共享浏览器暴露这个管理页面**。
+- 基于 [Claude Code CLI](https://code.claude.com/docs/en/cli-reference) 的 `stream-json` 与 [官方 SDK 控制协议](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/_internal/query.py)，实测 CLI 2.1.227。使用 `--safe-mode --permission-mode manual --permission-prompt-tool stdio`；禁用管理会话的 hooks、插件、MCP 与项目定制，保留本机账号和模型设置。**safe-mode 不是操作系统沙箱**，工具在允许后仍有本机用户权限；这里没有使用跳过权限检查的参数。旧 CLI 不支持这些参数时会显示退出错误，需要用户自行更新。
+- 工作副本、Claude 会话文件与代码改动在停止后保留；服务正常退出会停止受管 CC。管理记录、事件缓冲仅在服务内存中，服务重启后不会自动重新注册旧 Agent；工作目录仍在，可用本机 Claude CLI 自行恢复。强杀服务/系统崩溃不保证子进程清理。
+- 每 Agent 保留最近 256 条事件，单条展示上限 16 KiB，输出协议单行上限 1 MiB；Web 每个 Agent 保留最近 120 条可读记录。截断有提示，这不是完整日志归档。提示词上限 32 KiB，本次服务最多保留 128 个 Agent 记录；工作副本不自动清理，需自行管理磁盘占用。
+- 权限请求可能包含文件内容或命令，输出日志仅适合在本机查看。实际发送提示词使用用户自己的 Claude 额度；程序不自动发送模型任务。
 
 ### RPC 调用
 
@@ -221,8 +265,9 @@ cargo test --all-targets
 node --check web/dashboard.js
 node --check web/rpc-client.js
 node --check web/debugger.js
+node --check web/agents.js
 cargo build --bins
 node --test tests/web_*.cjs
 ```
 
-Web 测试包括调试表单逻辑、RPC 客户端错误处理，以及在随机本地端口启动独立测试池的真实调用流程；不会使用或重启你正在运行的 7788 实例，不等同于浏览器视觉验收。
+Web 测试包括调试表单逻辑、RPC 客户端错误处理，以及在随机本地端口启动独立测试池的真实调用流程。CC 自动测试使用离线协议替身和临时 Git 仓库，覆盖进程复用、工作目录隔离、授权/拒绝、中断、恢复、异常退出、缓存边界、同源防护和关闭清理；不调用收费模型、不克隆外部仓库、不使用或重启你正在运行的 7788 实例，不等同于浏览器视觉验收。

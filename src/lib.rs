@@ -4,6 +4,7 @@
 //! request and response over each worker's stdin/stdout. Workers are single-flight,
 //! while the pool provides parallelism by managing multiple worker processes.
 
+pub mod agents;
 mod config;
 mod error;
 mod pool;

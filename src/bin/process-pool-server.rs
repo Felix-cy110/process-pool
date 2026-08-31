@@ -3,6 +3,7 @@ use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, time::Duration}
 use clap::Parser;
 use process_pool::{
     PoolConfig, ProcessFactoryConfig,
+    agents::{AgentConfig, AgentManager},
     server::{AppState, router},
 };
 use tokio::net::TcpListener;
@@ -27,6 +28,17 @@ struct Args {
 
     #[arg(long, default_value_t = 30_000)]
     default_timeout_ms: u64,
+
+    /// Locally installed Claude Code executable; never installed by this service.
+    #[arg(long, default_value = "claude")]
+    claude_program: PathBuf,
+
+    /// Base clone and isolated per-Agent worktrees (retained after stop).
+    #[arg(long, default_value = ".agent-workspaces")]
+    agent_workspace_root: PathBuf,
+
+    #[arg(long, default_value_t = 4)]
+    max_cc_agents: usize,
 }
 
 #[tokio::main]
@@ -53,7 +65,14 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         Some(path) => serde_json::from_str(&tokio::fs::read_to_string(path).await?)?,
         None => BTreeMap::new(),
     };
-    let state = AppState::new(factories, Duration::from_millis(args.default_timeout_ms));
+    let mut state = AppState::new(factories, Duration::from_millis(args.default_timeout_ms));
+    if args.listen.ip().is_loopback() {
+        state = state.with_agents(AgentManager::new(AgentConfig {
+            claude_program: args.claude_program,
+            workspace_root: args.agent_workspace_root,
+            max_agents: args.max_cc_agents,
+        })?);
+    }
     if let Some(path) = args.config {
         let config: PoolConfig = serde_json::from_str(&tokio::fs::read_to_string(path).await?)?;
         state.initialize_local(config).await?;

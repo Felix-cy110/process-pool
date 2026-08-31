@@ -85,7 +85,7 @@ test("Web RPC client operates a real isolated pool: initialize, reuse, queue, ex
   assert.equal(final.rejected_task_count, 1);
   assert.equal((await client.call("pool.initialize", params)).response.error.code, -32007);
 
-  for (const asset of ["rpc-client.js", "debugger.js", "dashboard.js"]) {
+  for (const asset of ["rpc-client.js", "debugger.js", "agents.js", "dashboard.js"]) {
     const response = await fetch(`${base}/assets/${asset}`);
     assert.equal(response.status, 200);
     assert.match(response.headers.get("content-type"), /text\/javascript/);

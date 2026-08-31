@@ -13,6 +13,7 @@
   let changingPool = false;
   let debugging = false;
   let debuggerUi = null;
+  let agentsUi = null;
   let stateGeneration = 0;
   const rpcClient = ProcessPoolRpc.createClient();
 
@@ -73,37 +74,44 @@
   };
 
   function showTab(name, { focus = false, syncHash = true } = {}) {
-    const isDebug = name === "debug";
-    elements.debugView.hidden = !isDebug;
-    elements.monitorView.hidden = isDebug;
-    elements.debugTab.setAttribute("aria-selected", String(isDebug));
-    elements.monitorTab.setAttribute("aria-selected", String(!isDebug));
-    elements.debugTab.tabIndex = isDebug ? 0 : -1;
-    elements.monitorTab.tabIndex = isDebug ? -1 : 0;
-    elements.pageTitle.textContent = isDebug ? "进程池接口调试" : "进程池运行监控";
-    elements.pageDescription.textContent = isDebug
-      ? "在此初始化、预热和投放任务。切换回运行监控不会中断请求，也不会清空调试记录。"
-      : "每秒采集 worker、队列和任务执行指标。初始化与任务投放请切换至接口调试。";
-    if (focus) (isDebug ? elements.debugTab : elements.monitorTab).focus();
-    if (!isDebug) drawChart();
-    const hash = isDebug ? "#debug" : "#monitor";
+    if (!["monitor", "debug", "agents"].includes(name)) name = "monitor";
+    for (const key of ["monitor", "debug", "agents"]) {
+      const selected = key === name;
+      byId(`${key}-view`).hidden = !selected;
+      byId(`${key}-tab`).setAttribute("aria-selected", String(selected));
+      byId(`${key}-tab`).tabIndex = selected ? 0 : -1;
+    }
+    elements.pageTitle.textContent = { monitor: "进程池运行监控", debug: "进程池接口调试", agents: "Agent 调试 · Claude Code" }[name];
+    elements.pageDescription.textContent = {
+      monitor: "每秒采集 worker、队列和任务执行指标。初始化与任务投放请切换至接口调试。",
+      debug: "在此初始化、预热和投放任务。切换回运行监控不会中断请求，也不会清空调试记录。",
+      agents: "在独立的 conduit 工作副本中管理本机 Claude Code。逐进程对话、观察输出与控制生命周期。",
+    }[name];
+    agentsUi?.setActive(name === "agents");
+    elements.pauseButton.hidden = name === "agents";
+    if (focus) byId(`${name}-tab`).focus();
+    if (name === "monitor") drawChart();
+    const hash = `#${name}`;
     if (syncHash && window.location.hash !== hash) window.location.hash = hash;
   }
 
-  [elements.monitorTab, elements.debugTab].forEach((tab, index) => {
-    tab.addEventListener("click", () => showTab(index === 1 ? "debug" : "monitor"));
+  const tabNames = ["monitor", "debug", "agents"];
+  tabNames.forEach((name, index) => {
+    const tab = byId(`${name}-tab`);
+    tab.addEventListener("click", () => showTab(name));
     tab.addEventListener("keydown", (event) => {
       let target;
-      if (event.key === "ArrowLeft" || event.key === "ArrowRight") target = 1 - index;
+      if (event.key === "ArrowLeft") target = (index + tabNames.length - 1) % tabNames.length;
+      else if (event.key === "ArrowRight") target = (index + 1) % tabNames.length;
       else if (event.key === "Home") target = 0;
-      else if (event.key === "End") target = 1;
+      else if (event.key === "End") target = tabNames.length - 1;
       else return;
       event.preventDefault();
-      showTab(target === 1 ? "debug" : "monitor", { focus: true });
+      showTab(tabNames[target], { focus: true });
     });
   });
   elements.openDebugButton.addEventListener("click", () => showTab("debug", { focus: true }));
-  window.addEventListener("hashchange", () => showTab(window.location.hash === "#debug" ? "debug" : "monitor", { syncHash: false }));
+  window.addEventListener("hashchange", () => showTab(window.location.hash.slice(1), { syncHash: false }));
 
   function showLifecycle(isInitialized) {
     initialized = isInitialized;
@@ -504,7 +512,9 @@
   });
 
   new ResizeObserver(drawChart).observe(elements.chart);
-  showTab(window.location.hash === "#debug" ? "debug" : "monitor", { syncHash: false });
+  agentsUi = ProcessPoolAgents.mount({ client: ProcessPoolRpc.createClient() });
+  elements.refreshButton.addEventListener("click", () => agentsUi.refresh());
+  showTab(window.location.hash.slice(1), { syncHash: false });
   elements.connectionEndpoint.textContent = window.location.host;
   loadFactories();
   refresh();

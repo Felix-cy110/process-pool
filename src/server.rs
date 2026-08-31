@@ -2,12 +2,12 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use crate::{
     PoolConfig, PoolError, ProcessFactoryConfig, ProcessPool, RejectedExecutionHandler, TimeUnit,
-    WorkQueueConfig,
+    WorkQueueConfig, agents::AgentManager,
 };
 use axum::{
     Json, Router,
     extract::State,
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
@@ -20,6 +20,7 @@ pub struct AppState {
     pool: Arc<Mutex<Option<ProcessPool>>>,
     factories: Arc<BTreeMap<String, ProcessFactoryConfig>>,
     default_timeout: Duration,
+    agents: Option<AgentManager>,
 }
 
 /// Seven caller-supplied parameters. The factory is a registered name, never a command.
@@ -44,7 +45,14 @@ impl AppState {
             pool: Arc::new(Mutex::new(None)),
             factories: Arc::new(factories),
             default_timeout,
+            agents: None,
         }
+    }
+
+    /// Enable only when the actual HTTP listener is loopback-bound.
+    pub fn with_agents(mut self, agents: AgentManager) -> Self {
+        self.agents = Some(agents);
+        self
     }
 
     /// Trusted local initialization (e.g. the optional CLI configuration file).
@@ -100,6 +108,9 @@ impl AppState {
     }
 
     pub async fn shutdown(&self) {
+        if let Some(agents) = &self.agents {
+            agents.shutdown().await;
+        }
         if let Some(pool) = self.pool.lock().await.take() {
             let _ = pool.shutdown().await;
         }
@@ -155,6 +166,7 @@ pub fn router(state: AppState) -> Router {
         .route("/assets/dashboard.js", get(dashboard_js))
         .route("/assets/rpc-client.js", get(rpc_client_js))
         .route("/assets/debugger.js", get(debugger_js))
+        .route("/assets/agents.js", get(agents_js))
         .route("/api/stats", get(stats_api))
         .route("/api/factories", get(factories_api))
         .route("/rpc", post(rpc))
@@ -205,6 +217,13 @@ async fn debugger_js() -> impl IntoResponse {
     )
 }
 
+async fn agents_js() -> impl IntoResponse {
+    static_asset(
+        "text/javascript; charset=utf-8",
+        include_str!("../web/agents.js"),
+    )
+}
+
 fn static_asset(content_type: &'static str, body: &'static str) -> impl IntoResponse {
     (
         [
@@ -227,7 +246,11 @@ async fn stats_api(State(state): State<AppState>) -> Response {
     }
 }
 
-async fn rpc(State(state): State<AppState>, Json(request): Json<RpcRequest>) -> Json<RpcResponse> {
+async fn rpc(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<RpcRequest>,
+) -> Json<RpcResponse> {
     let id = request.id;
     if request.jsonrpc != "2.0" {
         return Json(RpcResponse::error(
@@ -236,6 +259,36 @@ async fn rpc(State(state): State<AppState>, Json(request): Json<RpcRequest>) -> 
             "jsonrpc must be \"2.0\"",
             None,
         ));
+    }
+
+    if request.method.starts_with("cc.") {
+        if !local_same_origin(&headers) {
+            return Json(RpcResponse::error(
+                id,
+                -32101,
+                "CC 管理仅允许本机同源访问",
+                None,
+            ));
+        }
+        let Some(agents) = &state.agents else {
+            return Json(if request.method == "cc.status" {
+                RpcResponse::success(
+                    id,
+                    json!({"enabled":false,"agents":[],"reason":"CC 管理仅在 loopback 监听地址启用"}),
+                )
+            } else {
+                RpcResponse::error(id, -32101, "CC 管理未启用，请使用 127.0.0.1 监听地址", None)
+            });
+        };
+        return Json(
+            match agents
+                .rpc(&request.method, request.params.unwrap_or(json!({})))
+                .await
+            {
+                Ok(value) => RpcResponse::success(id, value),
+                Err(error) => RpcResponse::error(id, -32100, error, None),
+            },
+        );
     }
 
     let response = match request.method.as_str() {
@@ -293,6 +346,28 @@ async fn rpc(State(state): State<AppState>, Json(request): Json<RpcRequest>) -> 
         _ => RpcResponse::error(id, -32601, "method not found", None),
     };
     Json(response)
+}
+
+fn local_same_origin(headers: &HeaderMap) -> bool {
+    let Some(host) = headers.get(header::HOST).and_then(|v| v.to_str().ok()) else {
+        return false;
+    };
+    let Ok(authority) = host.parse::<axum::http::uri::Authority>() else {
+        return false;
+    };
+    if !matches!(authority.host(), "localhost" | "127.0.0.1" | "[::1]") {
+        return false;
+    }
+    if let Some(site) = headers.get("sec-fetch-site")
+        && site != "same-origin"
+        && site != "none"
+    {
+        return false;
+    }
+    match headers.get(header::ORIGIN) {
+        Some(origin) => origin.to_str().is_ok_and(|o| o == format!("http://{host}")),
+        None => true, // local CLI callers do not send Origin
+    }
 }
 
 fn parse_execute_params(params: Option<Value>) -> Result<ExecuteParams, String> {
@@ -383,5 +458,34 @@ impl RpcResponse {
             error.to_string(),
             Some(json!({ "kind": format!("{error:?}") })),
         )
+    }
+}
+
+#[cfg(test)]
+mod cc_access_tests {
+    use super::*;
+
+    #[test]
+    fn only_local_same_origin_authorities_are_accepted() {
+        let mut headers = HeaderMap::new();
+        assert!(!local_same_origin(&headers));
+        for host in ["localhost:7788", "127.0.0.1:7788", "[::1]:7788"] {
+            headers.insert(header::HOST, host.parse().unwrap());
+            assert!(local_same_origin(&headers), "{host}");
+            headers.insert(header::ORIGIN, format!("http://{host}").parse().unwrap());
+            assert!(local_same_origin(&headers));
+            headers.insert(header::ORIGIN, "http://localhost:1".parse().unwrap());
+            assert!(!local_same_origin(&headers));
+            headers.remove(header::ORIGIN);
+        }
+        for host in [
+            "attacker.invalid",
+            "127.0.0.1.attacker.invalid",
+            "localhost.attacker.invalid",
+            "192.168.1.1:7788",
+        ] {
+            headers.insert(header::HOST, host.parse().unwrap());
+            assert!(!local_same_origin(&headers), "{host}");
+        }
     }
 }

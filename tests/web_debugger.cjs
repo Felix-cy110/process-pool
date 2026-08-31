@@ -214,13 +214,14 @@ async function setupFullDashboard(initialHash = "") {
   const browserWindow = { location: { host: "127.0.0.1:test", hash: initialHash },
     setInterval(fn) { poll = fn; }, addEventListener(name, listener) { windowEvents.set(name, listener); } };
   const context = vm.createContext({ document: doc, window: browserWindow,
-    ResizeObserver: class { observe() {} }, AbortController, AbortSignal, TextEncoder, performance, setTimeout, clearTimeout,
+    ResizeObserver: class { observe() {} }, AbortController, AbortSignal, TextEncoder, performance, setTimeout, clearTimeout, setInterval() {},
     fetch: async (url, options) => {
       if (url === "/api/factories") return Response.json({ factories: ["echo"] });
       if (url === "/api/stats") return Response.json(snapshot);
       assert.equal(url, "/rpc");
       const request = JSON.parse(options.body);
       sent.push(request);
+      if (request.method === "cc.status") return response(request, { result: { enabled: true, repository_ready: false, agents: [], max_agents: 4 } });
       if (request.method === "pool.initialize") {
         snapshot = { initialized: true, core_pool_size: 1, maximum_pool_size: 3, keep_alive_ms: 30_000,
           work_queue_capacity: 1, rejection_policy: "abort", worker_count: 0, busy_worker_count: 0,
@@ -238,7 +239,7 @@ async function setupFullDashboard(initialHash = "") {
       }; });
     },
   });
-  for (const file of ["rpc-client.js", "debugger.js", "dashboard.js"]) {
+  for (const file of ["rpc-client.js", "debugger.js", "agents.js", "dashboard.js"]) {
     vm.runInContext(readFileSync(path.join(__dirname, "../web", file), "utf8"), context, { filename: file });
   }
   const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -306,6 +307,9 @@ test("tab deep links, hash navigation, and keyboard selection stay synchronized"
   assert.equal(browserWindow.location.hash, "#monitor");
   assert.equal(nodes.get("monitor-tab").focused, true);
   await nodes.get("monitor-tab").dispatch("keydown", { key: "End" });
+  assert.equal(browserWindow.location.hash, "#agents");
+  assert.equal(nodes.get("agents-view").hidden, false);
+  await nodes.get("agents-tab").dispatch("keydown", { key: "ArrowLeft" });
   assert.equal(browserWindow.location.hash, "#debug");
   await nodes.get("debug-tab").dispatch("keydown", { key: "ArrowLeft" });
   assert.equal(browserWindow.location.hash, "#monitor");
@@ -313,7 +317,7 @@ test("tab deep links, hash navigation, and keyboard selection stay synchronized"
   windowEvents.get("hashchange")();
   assert.equal(nodes.get("monitor-view").hidden, false);
   assert.equal(nodes.get("debug-view").hidden, true);
-  assert.equal(sent.length, 0);
+  assert.equal(sent.filter((request) => request.method !== "cc.status").length, 0);
 });
 
 test("HTML keeps all mutating controls in the debug panel and metrics in the monitor panel", () => {
@@ -342,5 +346,10 @@ test("HTML keeps all mutating controls in the debug panel and metrics in the mon
   for (const id of ["runtime-panels", "load-chart", "worker-rows"]) {
     assert.ok(ancestors.get(id).includes("monitor-view"));
     assert.ok(!ancestors.get(id).includes("debug-view"));
+  }
+  for (const id of ["cc-create-form", "cc-send-form", "cc-list", "cc-permissions"]) {
+    assert.ok(ancestors.get(id).includes("agents-view"));
+    assert.ok(!ancestors.get(id).includes("debug-view"));
+    assert.ok(!ancestors.get(id).includes("monitor-view"));
   }
 });

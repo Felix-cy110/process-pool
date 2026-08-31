@@ -5,7 +5,8 @@
 })(globalThis, () => {
   "use strict";
 
-  const METHODS = ["pool.initialize", "pool.execute", "pool.prestart", "pool.stats"];
+  const METHODS = ["pool.initialize", "pool.execute", "pool.prestart", "pool.stats",
+    "cc.status", "cc.prepare", "cc.create", "cc.get", "cc.send", "cc.permission", "cc.interrupt", "cc.stop", "cc.restart"];
   const MAX_BATCH = 16;
   const MAX_REQUEST_BYTES = 64 * 1024;
   let sequence = 0;
