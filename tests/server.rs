@@ -206,6 +206,8 @@ async fn dashboard_and_assets_are_served_with_safe_content_types() {
     for (path, content_type) in [
         ("/", "text/html"),
         ("/assets/dashboard.js", "text/javascript"),
+        ("/assets/rpc-client.js", "text/javascript"),
+        ("/assets/debugger.js", "text/javascript"),
         ("/assets/dashboard.css", "text/css"),
     ] {
         let response = app

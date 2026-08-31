@@ -11,7 +11,10 @@
   let initialized = false;
   let factoriesReady = false;
   let changingPool = false;
+  let debugging = false;
+  let debuggerUi = null;
   let stateGeneration = 0;
+  const rpcClient = ProcessPoolRpc.createClient();
 
   const byId = (id) => document.getElementById(id);
   const elements = {
@@ -57,14 +60,17 @@
     factoryStatus: byId("factory-status"),
     runtimePanels: byId("runtime-panels"),
     prestartButton: byId("prestart-button"),
+    debugPoolState: byId("debug-pool-state"),
   };
 
   function showLifecycle(isInitialized) {
     initialized = isInitialized;
     elements.initializationForm.hidden = initialized;
     elements.runtimePanels.hidden = !initialized;
-    elements.initializationFields.disabled = !factoriesReady || changingPool || initialized;
-    elements.prestartButton.disabled = !initialized || changingPool;
+    elements.initializationFields.disabled = !factoriesReady || changingPool || debugging || initialized;
+    elements.prestartButton.disabled = !initialized || changingPool || debugging;
+    debuggerUi?.setBusy(changingPool);
+    if (!initialized) elements.debugPoolState.textContent = "尚未初始化 · worker 0 · 请先提交七参数配置。";
     elements.initializationStatus.textContent = initialized
       ? "已初始化 · worker 按任务需求创建。若需提前启动至核心数量，可点击「预热核心进程」。更换配置需重启服务。"
       : "服务在线 · 等待使用方传入 7 个初始化参数，尚未创建 worker。";
@@ -88,7 +94,7 @@
         elements.factorySelect.append(option);
       });
       factoriesReady = factories.length > 0;
-      elements.initializationFields.disabled = !factoriesReady || changingPool || initialized;
+      elements.initializationFields.disabled = !factoriesReady || changingPool || debugging || initialized;
       elements.factoryStatus.textContent = factoriesReady
         ? "工厂已加载，请选择要复用的 worker 程序。"
         : "服务端未登记进程工厂，请先配置 --factories 并重启服务。";
@@ -98,20 +104,13 @@
   }
 
   async function callRpc(method, params) {
-    const response = await fetch("/rpc", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: Date.now(), method, params }),
-      signal: AbortSignal.timeout(30000),
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const message = await response.json();
-    if (message.error) throw new Error(message.error.message);
-    return message.result;
+    const record = await rpcClient.call(method, params);
+    if (record.status !== "success") throw new Error(record.errorMessage);
+    return record.response.result;
   }
 
   async function changePool(method, params) {
-    if (changingPool) return;
+    if (changingPool || debugging) return;
     changingPool = true;
     stateGeneration += 1;
     showLifecycle(initialized);
@@ -134,6 +133,20 @@
       showLifecycle(initialized);
       refresh();
     }
+  }
+
+  function readInitializationParams() {
+    // Read controls directly so the template also works when the form is disabled.
+    const value = (name) => elements.initializationForm.elements.namedItem(name).value;
+    return {
+      core_pool_size: Number(value("core_pool_size")),
+      maximum_pool_size: Number(value("maximum_pool_size")),
+      keep_alive_time: Number(value("keep_alive_time")),
+      time_unit: value("time_unit"),
+      work_queue: { type: "bounded", capacity: Number(value("queue_capacity")) },
+      process_factory: value("process_factory"),
+      rejected_execution_handler: value("rejected_execution_handler"),
+    };
   }
 
   function number(value) {
@@ -276,6 +289,7 @@
     elements.configQueue.textContent = number(stats.work_queue_capacity);
     elements.configKeepalive.textContent = duration(stats.keep_alive_ms);
     elements.configPolicy.textContent = policyLabel(stats.rejection_policy);
+    elements.debugPoolState.textContent = `当前 worker ${stats.worker_count} / ${stats.maximum_pool_size} · 忙碌 ${stats.busy_worker_count} · 空闲 ${stats.idle_worker_count} · 排队 ${stats.queued_task_count} · 已拒绝 ${stats.rejected_task_count}`;
     renderWorkers(stats.workers || []);
   }
 
@@ -382,6 +396,7 @@
     } catch (error) {
       if (generation !== stateGeneration) return;
       setConnection("offline", "连接中断");
+      elements.debugPoolState.textContent = "进程池状态读取失败，显示的调用记录仅代表此前响应。";
       if (!events[0] || events[0].message !== "无法读取进程池状态") {
         addEvent("无法读取进程池状态", "bad");
       }
@@ -414,29 +429,34 @@
 
   elements.initializationForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (changingPool || initialized || !elements.initializationForm.reportValidity()) return;
-    const values = new FormData(elements.initializationForm);
-    const numeric = (name) => Number(values.get(name));
-    const core = numeric("core_pool_size");
-    const maximum = numeric("maximum_pool_size");
-    const keepAlive = numeric("keep_alive_time");
-    const capacity = numeric("queue_capacity");
+    if (changingPool || debugging || initialized || !elements.initializationForm.reportValidity()) return;
+    const params = readInitializationParams();
+    const { core_pool_size: core, maximum_pool_size: maximum, keep_alive_time: keepAlive } = params;
+    const capacity = params.work_queue.capacity;
     if (![core, maximum, keepAlive, capacity].every(Number.isSafeInteger) || core > maximum) {
       showActionMessage("请使用有效整数，并确保核心进程数不大于最大进程数。", true);
       return;
     }
-    changePool("pool.initialize", {
-      core_pool_size: core,
-      maximum_pool_size: maximum,
-      keep_alive_time: keepAlive,
-      time_unit: values.get("time_unit"),
-      work_queue: { type: "bounded", capacity },
-      process_factory: values.get("process_factory"),
-      rejected_execution_handler: values.get("rejected_execution_handler"),
-    });
+    changePool("pool.initialize", params);
   });
 
   elements.prestartButton.addEventListener("click", () => changePool("pool.prestart", {}));
+
+  debuggerUi = ProcessPoolDebugger.mount({
+    client: rpcClient,
+    readInitializationParams,
+    onBusyChange(value) {
+      debugging = value;
+      showLifecycle(initialized);
+    },
+    onSettled(records) {
+      stateGeneration += 1;
+      if (records.some((record) => record.request.method === "pool.initialize" && record.status === "success")) showLifecycle(true);
+      paused = false;
+      elements.pauseButton.textContent = "暂停刷新";
+      refresh();
+    },
+  });
 
   new ResizeObserver(drawChart).observe(elements.chart);
   elements.connectionEndpoint.textContent = window.location.host;

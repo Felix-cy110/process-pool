@@ -3,9 +3,11 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="Rust Process Pool 实时运行监控" />
-    <title>Process Pool · 运行监控</title>
+    <meta name="description" content="Rust Process Pool 实时监控与 RPC 调试" />
+    <title>Process Pool · 监控与调试</title>
     <link rel="stylesheet" href="/assets/dashboard.css" />
+    <script src="/assets/rpc-client.js" defer></script>
+    <script src="/assets/debugger.js" defer></script>
     <script src="/assets/dashboard.js" defer></script>
   </head>
   <body>
@@ -34,7 +36,7 @@
       <section class="hero">
         <div>
           <p class="eyebrow">LIVE RUNTIME / 本机实例</p>
-          <h1>进程池运行总览</h1>
+          <h1>进程池监控与调试</h1>
           <p class="hero-copy">每秒采集 worker、队列和任务执行指标。数据直接来自当前 Rust supervisor，不经过外部监控服务。</p>
         </div>
         <div class="hero-actions">
@@ -65,6 +67,68 @@
           </fieldset>
         </form>
         <p id="initialization-message" role="status"></p>
+      </section>
+
+      <section class="panel debug-panel" aria-labelledby="debug-title">
+        <div class="panel-heading">
+          <div>
+            <span class="section-kicker">RPC PLAYGROUND</span>
+            <h2 id="debug-title">接口调试</h2>
+          </div>
+          <code class="debug-endpoint">POST /rpc</code>
+        </div>
+        <p class="form-note">直接操作当前进程池。投放的是任务，进程由池按需创建和复用；想提前创建进程，请选择“预热核心进程”。</p>
+        <p class="debug-pool-state" id="debug-pool-state">正在读取进程池状态…</p>
+        <div class="debug-grid">
+          <form id="debug-form">
+            <fieldset id="debug-fields" disabled>
+              <div class="debug-controls">
+                <label>调用接口<select id="debug-method">
+                  <option value="pool.execute">投放任务 · pool.execute</option>
+                  <option value="pool.initialize">初始化 · pool.initialize</option>
+                  <option value="pool.prestart">预热核心进程 · pool.prestart</option>
+                  <option value="pool.stats">查询状态 · pool.stats</option>
+                </select></label>
+                <label id="debug-example-label">任务示例<select id="debug-example">
+                  <option value="sum">求和</option><option value="echo">回显 / 查看 PID</option>
+                  <option value="sleep">耗时任务 / 观察扩容</option><option value="fail">业务错误</option>
+                </select></label>
+              </div>
+              <p class="form-note" id="debug-hint">先初始化，再投放任务。示例任务适用于内置 echo worker。</p>
+              <div class="debug-editor-heading">
+                <label for="debug-params">请求参数 params（JSON，可修改）</label>
+                <div><button class="button button-ghost button-small" id="debug-template" type="button">载入模板</button>
+                  <button class="button button-ghost button-small" id="debug-format" type="button">格式化</button></div>
+              </div>
+              <textarea id="debug-params" rows="12" spellcheck="false" autocapitalize="off" autocomplete="off" required aria-describedby="debug-hint"></textarea>
+              <div class="debug-controls debug-limits">
+                <label id="debug-count-label">同时投放数量（1–16）<input id="debug-count" type="number" min="1" max="16" step="1" value="1" required /></label>
+                <label>HTTP 等待上限（秒）<input id="debug-wait" type="number" min="1" max="300" step="1" value="60" required /></label>
+              </div>
+              <button class="button button-primary" id="debug-send" type="submit">发送请求</button>
+            </fieldset>
+            <p class="form-note">并发投放会发送多次真实请求，不是模拟。HTTP 等待超时不等于任务取消，请先查询状态再决定是否重试。</p>
+          </form>
+          <div class="debug-output">
+            <div class="debug-editor-heading"><h3>响应结果</h3><span id="debug-result-meta">尚无调用</span></div>
+            <p id="debug-status" role="status">准备调试器…</p>
+            <pre id="debug-response" tabindex="0">发送请求后，查看完整结果或错误详情。</pre>
+            <details class="debug-request-details">
+              <summary>查看实际请求 JSON</summary>
+              <pre id="debug-request" tabindex="0">尚未发送请求。</pre>
+            </details>
+          </div>
+        </div>
+        <div class="debug-history-heading">
+          <h3>调用记录 <small>最近 30 条 · 仅保存在当前页面内存中</small></h3>
+          <button class="button button-ghost button-small" id="debug-clear" type="button">清空记录</button>
+        </div>
+        <div class="table-scroll">
+          <table aria-label="RPC 调试调用记录">
+            <thead><tr><th>时间</th><th>接口</th><th>结果</th><th>耗时</th><th>Worker PID</th><th>详情</th></tr></thead>
+            <tbody id="debug-history"><tr><td class="empty-row" colspan="6">尚无调用。上方初始化、预热操作也会记录在这里。</td></tr></tbody>
+          </table>
+        </div>
       </section>
 
       <div id="runtime-panels" hidden>

@@ -153,6 +153,8 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(dashboard))
         .route("/assets/dashboard.css", get(dashboard_css))
         .route("/assets/dashboard.js", get(dashboard_js))
+        .route("/assets/rpc-client.js", get(rpc_client_js))
+        .route("/assets/debugger.js", get(debugger_js))
         .route("/api/stats", get(stats_api))
         .route("/api/factories", get(factories_api))
         .route("/rpc", post(rpc))
@@ -186,6 +188,20 @@ async fn dashboard_js() -> impl IntoResponse {
     static_asset(
         "text/javascript; charset=utf-8",
         include_str!("../web/dashboard.js"),
+    )
+}
+
+async fn rpc_client_js() -> impl IntoResponse {
+    static_asset(
+        "text/javascript; charset=utf-8",
+        include_str!("../web/rpc-client.js"),
+    )
+}
+
+async fn debugger_js() -> impl IntoResponse {
+    static_asset(
+        "text/javascript; charset=utf-8",
+        include_str!("../web/debugger.js"),
     )
 }
 
