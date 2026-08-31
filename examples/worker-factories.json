@@ -1,0 +1,8 @@
+{
+  "echo": {
+    "program": "./target/debug/echo-worker",
+    "args": [],
+    "env": {},
+    "current_dir": null
+  }
+}

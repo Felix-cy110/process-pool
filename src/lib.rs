@@ -8,10 +8,11 @@ mod config;
 mod error;
 mod pool;
 mod protocol;
+pub mod server;
 
 pub use config::{
     PoolConfig, ProcessFactoryConfig, RejectedExecutionHandler, TimeUnit, WorkQueueConfig,
 };
 pub use error::PoolError;
-pub use pool::{PoolStats, ProcessPool};
+pub use pool::{PoolStats, ProcessPool, WorkerState, WorkerStats};
 pub use protocol::{WorkerError, WorkerRequest, WorkerResponse};

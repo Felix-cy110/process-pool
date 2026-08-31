@@ -1,0 +1,14 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "pool.initialize",
+  "params": {
+    "core_pool_size": 2,
+    "maximum_pool_size": 8,
+    "keep_alive_time": 30,
+    "time_unit": "seconds",
+    "work_queue": { "type": "bounded", "capacity": 128 },
+    "process_factory": "echo",
+    "rejected_execution_handler": "abort"
+  }
+}

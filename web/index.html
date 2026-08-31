@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Rust Process Pool 实时运行监控" />
+    <title>Process Pool · 运行监控</title>
+    <link rel="stylesheet" href="/assets/dashboard.css" />
+    <script src="/assets/dashboard.js" defer></script>
+  </head>
+  <body>
+    <div class="ambient ambient-one" aria-hidden="true"></div>
+    <div class="ambient ambient-two" aria-hidden="true"></div>
+
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Process Pool 监控首页">
+        <span class="brand-mark" aria-hidden="true">
+          <i></i><i></i><i></i>
+        </span>
+        <span>
+          <strong>Process Pool</strong>
+          <small>Runtime Control Room</small>
+        </span>
+      </a>
+
+      <div class="connection" id="connection" aria-live="polite">
+        <span class="connection-dot"></span>
+        <span id="connection-label">正在连接</span>
+        <span class="connection-endpoint" id="connection-endpoint">—</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div>
+          <p class="eyebrow">LIVE RUNTIME / 本机实例</p>
+          <h1>进程池运行总览</h1>
+          <p class="hero-copy">每秒采集 worker、队列和任务执行指标。数据直接来自当前 Rust supervisor，不经过外部监控服务。</p>
+        </div>
+        <div class="hero-actions">
+          <button class="button button-ghost" id="prestart-button" type="button" disabled>预热核心进程</button>
+          <button class="button button-ghost" id="pause-button" type="button">暂停刷新</button>
+          <button class="button button-primary" id="refresh-button" type="button">立即刷新</button>
+        </div>
+      </section>
+
+      <section class="panel initialization-panel" aria-labelledby="initialization-title">
+        <h2 id="initialization-title">初始化进程池</h2>
+        <p id="initialization-status" role="status">正在读取服务状态…</p>
+        <form id="initialization-form" hidden>
+          <p class="form-note">服务已启动，但尚未创建进程池，当前 worker 为 0。以下是可修改的示例值，只有点击初始化才会提交；初始化本身也不会启动 worker。</p>
+          <p class="form-note" id="factory-status" role="status">正在加载已注册进程工厂…</p>
+          <fieldset id="initialization-fields" disabled>
+            <div class="initialization-grid">
+              <label>1 · 核心进程数<input name="core_pool_size" type="number" min="0" step="1" value="2" required /></label>
+              <label>2 · 最大进程数<input name="maximum_pool_size" type="number" min="1" step="1" value="8" required /></label>
+              <label>3 · 空闲保活时间<input name="keep_alive_time" type="number" min="0" step="1" value="30" required /></label>
+              <label>4 · 时间单位<select name="time_unit"><option value="seconds">秒</option><option value="milliseconds">毫秒</option><option value="minutes">分钟</option></select></label>
+              <label>5 · 有界工作队列容量<input name="queue_capacity" type="number" min="0" step="1" value="128" required /></label>
+              <label>6 · 已注册进程工厂<select name="process_factory" id="factory-select" required><option value="">正在加载…</option></select></label>
+              <label>7 · 拒绝策略<select name="rejected_execution_handler"><option value="abort">Abort · 立即拒绝</option><option value="discard">Discard · 丢弃新任务</option><option value="discard_oldest">Discard Oldest · 丢弃队首</option><option value="caller_runs">Caller Runs · 额外一次性进程</option></select></label>
+            </div>
+            <p class="form-note">队列容量 0 表示直接移交。Caller Runs 可能突破最大进程数，RPC 服务建议使用 Abort。进程工厂只能选择服务端登记的名称，不能输入任意命令。</p>
+            <button class="button button-primary" id="initialize-button" type="submit">使用以上 7 个参数初始化</button>
+          </fieldset>
+        </form>
+        <p id="initialization-message" role="status"></p>
+      </section>
+
+      <div id="runtime-panels" hidden>
+      <section class="overview" aria-label="进程池核心指标">
+        <article class="utilization-card panel">
+          <div class="panel-heading">
+            <div>
+              <span class="section-kicker">CAPACITY</span>
+              <h2>容量利用率</h2>
+            </div>
+            <span class="live-tag"><i></i> LIVE</span>
+          </div>
+          <div class="utilization-body">
+            <div class="usage-ring" id="usage-ring" aria-label="容量利用率">
+              <div>
+                <strong id="usage-value">—</strong>
+                <span>BUSY / MAX</span>
+              </div>
+            </div>
+            <div class="worker-summary">
+              <div><span>当前进程</span><strong id="worker-ratio">—</strong></div>
+              <div><span>忙碌</span><strong class="accent-warm" id="busy-count">—</strong></div>
+              <div><span>空闲</span><strong class="accent-cool" id="idle-count">—</strong></div>
+            </div>
+          </div>
+        </article>
+
+        <div class="metric-grid">
+          <article class="metric-card panel">
+            <span class="metric-icon queue-icon" aria-hidden="true"></span>
+            <span class="metric-label">等待队列</span>
+            <strong id="queue-value">—</strong>
+            <div class="meter"><i id="queue-meter"></i></div>
+            <small id="queue-caption">容量 —</small>
+          </article>
+          <article class="metric-card panel">
+            <span class="metric-icon success-icon" aria-hidden="true"></span>
+            <span class="metric-label">成功任务</span>
+            <strong id="completed-value">—</strong>
+            <small id="success-rate">成功率 —</small>
+          </article>
+          <article class="metric-card panel">
+            <span class="metric-icon failure-icon" aria-hidden="true"></span>
+            <span class="metric-label">失败任务</span>
+            <strong id="failed-value">—</strong>
+            <small id="failure-caption">运行正常</small>
+          </article>
+          <article class="metric-card panel">
+            <span class="metric-icon rejected-icon" aria-hidden="true"></span>
+            <span class="metric-label">拒绝任务</span>
+            <strong id="rejected-value">—</strong>
+            <small id="caller-runs-caption">Caller Runs —</small>
+          </article>
+        </div>
+      </section>
+
+      <section class="trend panel">
+        <div class="panel-heading trend-heading">
+          <div>
+            <span class="section-kicker">LAST 60 SECONDS</span>
+            <h2>实时负载趋势</h2>
+          </div>
+          <div class="trend-meta">
+            <span><i class="legend busy"></i>忙碌进程</span>
+            <span><i class="legend queue"></i>队列任务</span>
+            <strong id="throughput">— task/s</strong>
+          </div>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="load-chart" role="img" aria-label="最近一分钟忙碌进程与排队任务趋势"></canvas>
+          <div class="chart-empty" id="chart-empty">正在积累趋势数据…</div>
+        </div>
+        <div class="trend-footer">
+          <span>60 秒前</span>
+          <span id="sample-count">0 / 60 个采样点</span>
+          <span>现在</span>
+        </div>
+      </section>
+
+      <section class="lower-grid">
+        <article class="workers-panel panel">
+          <div class="panel-heading">
+            <div>
+              <span class="section-kicker">WORKER PROCESSES</span>
+              <h2>进程明细</h2>
+            </div>
+            <span class="count-badge" id="workers-badge">— 个进程</span>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Worker</th>
+                  <th>PID</th>
+                  <th>状态</th>
+                  <th>当前任务</th>
+                  <th>状态持续</th>
+                  <th>已处理</th>
+                  <th>最近耗时</th>
+                </tr>
+              </thead>
+              <tbody id="worker-rows">
+                <tr><td class="empty-row" colspan="7">等待进程数据…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <aside class="side-stack">
+          <article class="config-panel panel">
+            <div class="panel-heading">
+              <div>
+                <span class="section-kicker">POOL POLICY</span>
+                <h2>运行参数</h2>
+              </div>
+            </div>
+            <dl class="config-list">
+              <div><dt>核心进程</dt><dd id="config-core">—</dd></div>
+              <div><dt>最大进程</dt><dd id="config-max">—</dd></div>
+              <div><dt>队列容量</dt><dd id="config-queue">—</dd></div>
+              <div><dt>空闲保活</dt><dd id="config-keepalive">—</dd></div>
+              <div><dt>拒绝策略</dt><dd id="config-policy">—</dd></div>
+            </dl>
+          </article>
+
+          <article class="events-panel panel">
+            <div class="panel-heading">
+              <div>
+                <span class="section-kicker">SESSION EVENTS</span>
+                <h2>监控事件</h2>
+              </div>
+              <span class="latency" id="latency">— ms</span>
+            </div>
+            <ol class="events" id="events">
+              <li><i class="event-info"></i><span>等待第一次采样</span><time>现在</time></li>
+            </ol>
+          </article>
+        </aside>
+      </section>
+      </div>
+    </main>
+
+    <footer>
+      <span>Process Pool Monitor</span>
+      <span id="updated-at">尚未刷新</span>
+    </footer>
+  </body>
+</html>

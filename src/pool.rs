@@ -29,21 +29,27 @@ pub struct ProcessPool {
 }
 
 impl ProcessPool {
-    /// Starts and prewarms all configured core worker processes.
+    /// Creates the pool without starting workers. Workers are created on demand.
     pub async fn new(config: PoolConfig) -> Result<Self, PoolError> {
         config.validate()?;
         let keep_alive = config.keep_alive()?;
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::unbounded_channel();
 
-        let mut supervisor = Supervisor::new(config, keep_alive, event_tx);
-        if let Err(error) = supervisor.prestart_core_workers() {
-            supervisor.stop_all_workers();
-            return Err(error);
-        }
+        let supervisor = Supervisor::new(config, keep_alive, event_tx);
         tokio::spawn(supervisor.run(command_rx, event_rx));
 
         Ok(Self { command_tx })
+    }
+
+    /// Explicitly warms up to the configured core size, returning the number started.
+    /// Already-created workers are preserved; repeated calls are idempotent.
+    pub async fn prestart_core_workers(&self) -> Result<usize, PoolError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .send(CommandMessage::Prestart { response_tx })
+            .map_err(|_| PoolError::Closed)?;
+        response_rx.await.map_err(|_| PoolError::Closed)?
     }
 
     /// Executes one JSON payload and waits for the corresponding worker response.
@@ -81,6 +87,9 @@ impl ProcessPool {
 pub struct PoolStats {
     pub core_pool_size: usize,
     pub maximum_pool_size: usize,
+    pub keep_alive_ms: u64,
+    pub work_queue_capacity: usize,
+    pub rejection_policy: RejectedExecutionHandler,
     pub worker_count: usize,
     pub idle_worker_count: usize,
     pub busy_worker_count: usize,
@@ -89,9 +98,32 @@ pub struct PoolStats {
     pub failed_task_count: u64,
     pub rejected_task_count: u64,
     pub caller_runs_task_count: u64,
+    pub workers: Vec<WorkerStats>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerState {
+    Idle,
+    Busy,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct WorkerStats {
+    pub worker_id: u64,
+    pub process_id: Option<u32>,
+    pub state: WorkerState,
+    pub current_task_id: Option<u64>,
+    pub state_for_ms: u64,
+    pub uptime_ms: u64,
+    pub handled_task_count: u64,
+    pub last_task_duration_ms: Option<u64>,
 }
 
 enum CommandMessage {
+    Prestart {
+        response_tx: oneshot::Sender<Result<usize, PoolError>>,
+    },
     Submit {
         payload: Value,
         timeout: Duration,
@@ -131,7 +163,13 @@ enum WorkerEvent {
 
 struct WorkerSlot {
     job_tx: mpsc::UnboundedSender<Job>,
+    process_id: Option<u32>,
+    started_at: Instant,
+    state_since: Instant,
     idle_since: Option<Instant>,
+    current_task_id: Option<u64>,
+    handled_task_count: u64,
+    last_task_duration: Option<Duration>,
     task: JoinHandle<()>,
 }
 
@@ -143,6 +181,9 @@ struct Supervisor {
     queue: VecDeque<Job>,
     next_worker_id: u64,
     next_job_id: u64,
+    // Only replace core workers that have actually been started. Configuring a
+    // large core size must not turn task completion into implicit prewarming.
+    minimum_workers: usize,
     completed_task_count: u64,
     failed_task_count: u64,
     rejected_task_count: u64,
@@ -163,6 +204,7 @@ impl Supervisor {
             queue: VecDeque::new(),
             next_worker_id: 1,
             next_job_id: 1,
+            minimum_workers: 0,
             completed_task_count: 0,
             failed_task_count: 0,
             rejected_task_count: 0,
@@ -170,11 +212,20 @@ impl Supervisor {
         }
     }
 
-    fn prestart_core_workers(&mut self) -> Result<(), PoolError> {
-        for _ in 0..self.config.core_pool_size {
-            self.spawn_worker()?;
+    fn prestart_core_workers(&mut self) -> Result<usize, PoolError> {
+        let missing = self
+            .config
+            .core_pool_size
+            .saturating_sub(self.workers.len());
+        for _ in 0..missing {
+            let worker_id = self.spawn_worker()?;
+            if let Some(job) = self.queue.pop_front()
+                && let Err(job) = self.dispatch(worker_id, job)
+            {
+                self.place_job(job);
+            }
         }
-        Ok(())
+        Ok(missing)
     }
 
     async fn run(
@@ -190,6 +241,9 @@ impl Supervisor {
             tokio::select! {
                 command = command_rx.recv() => {
                     match command {
+                        Some(CommandMessage::Prestart { response_tx }) => {
+                            let _ = response_tx.send(self.prestart_core_workers());
+                        }
                         Some(CommandMessage::Submit { payload, timeout, response_tx }) => {
                             self.submit(payload, timeout, response_tx);
                         }
@@ -238,6 +292,12 @@ impl Supervisor {
     }
 
     fn place_job(&mut self, mut job: Job) {
+        // As in ThreadPoolExecutor, first grow toward core size on task arrival.
+        // Reuse/queue only after that target has been reached.
+        if self.workers.len() < self.config.core_pool_size {
+            self.start_job(job);
+            return;
+        }
         while let Some(worker_id) = self.idle_worker_id() {
             match self.dispatch(worker_id, job) {
                 Ok(()) => return,
@@ -245,19 +305,8 @@ impl Supervisor {
             }
         }
 
-        if self.workers.len() < self.config.core_pool_size || self.workers.is_empty() {
-            match self.spawn_worker() {
-                Ok(worker_id) => {
-                    if let Err(returned_job) = self.dispatch(worker_id, job) {
-                        let _ = returned_job.response_tx.send(Err(PoolError::SpawnFailed(
-                            "new worker stopped before accepting its first task".into(),
-                        )));
-                    }
-                }
-                Err(error) => {
-                    let _ = job.response_tx.send(Err(error));
-                }
-            }
+        if self.workers.is_empty() {
+            self.start_job(job);
             return;
         }
 
@@ -267,22 +316,26 @@ impl Supervisor {
         }
 
         if self.workers.len() < self.config.maximum_pool_size {
-            match self.spawn_worker() {
-                Ok(worker_id) => {
-                    if let Err(returned_job) = self.dispatch(worker_id, job) {
-                        let _ = returned_job.response_tx.send(Err(PoolError::SpawnFailed(
-                            "new worker stopped before accepting its first task".into(),
-                        )));
-                    }
-                }
-                Err(error) => {
-                    let _ = job.response_tx.send(Err(error));
-                }
-            }
+            self.start_job(job);
             return;
         }
 
         self.apply_rejection_policy(job);
+    }
+
+    fn start_job(&mut self, job: Job) {
+        match self.spawn_worker() {
+            Ok(worker_id) => {
+                if let Err(job) = self.dispatch(worker_id, job) {
+                    let _ = job.response_tx.send(Err(PoolError::SpawnFailed(
+                        "new worker stopped before accepting a task".into(),
+                    )));
+                }
+            }
+            Err(error) => {
+                let _ = job.response_tx.send(Err(error));
+            }
+        }
     }
 
     fn apply_rejection_policy(&mut self, job: Job) {
@@ -327,15 +380,20 @@ impl Supervisor {
                 reusable,
             } => {
                 self.record_outcome(&outcome);
-                let _ = job.response_tx.send(outcome);
 
                 if reusable {
                     if let Some(worker) = self.workers.get_mut(&worker_id) {
-                        worker.idle_since = Some(Instant::now());
+                        let now = Instant::now();
+                        worker.last_task_duration = Some(now.duration_since(worker.state_since));
+                        worker.handled_task_count += 1;
+                        worker.current_task_id = None;
+                        worker.idle_since = Some(now);
+                        worker.state_since = now;
                     }
                 } else {
                     self.remove_worker(worker_id);
                 }
+                let _ = job.response_tx.send(outcome);
 
                 self.drain_one_queued_task();
                 self.restore_core_workers();
@@ -398,7 +456,7 @@ impl Supervisor {
     }
 
     fn restore_core_workers(&mut self) {
-        while self.workers.len() < self.config.core_pool_size {
+        while self.workers.len() < self.minimum_workers {
             match self.spawn_worker() {
                 Ok(worker_id) => {
                     if let Some(job) = self.queue.pop_front()
@@ -424,17 +482,28 @@ impl Supervisor {
         let worker_id = self.next_worker_id;
         self.next_worker_id = self.next_worker_id.wrapping_add(1);
         let child = spawn_child(&self.config.process_factory)?;
+        let process_id = child.id();
         let (job_tx, job_rx) = mpsc::unbounded_channel();
         let event_tx = self.event_tx.clone();
         let task = tokio::spawn(worker_loop(worker_id, child, job_rx, event_tx));
+        let now = Instant::now();
         self.workers.insert(
             worker_id,
             WorkerSlot {
                 job_tx,
-                idle_since: Some(Instant::now()),
+                process_id,
+                started_at: now,
+                state_since: now,
+                idle_since: Some(now),
+                current_task_id: None,
+                handled_task_count: 0,
+                last_task_duration: None,
                 task,
             },
         );
+        self.minimum_workers = self
+            .minimum_workers
+            .max(self.workers.len().min(self.config.core_pool_size));
         debug!(worker_id, "started worker process");
         Ok(worker_id)
     }
@@ -443,7 +512,10 @@ impl Supervisor {
         let Some(worker) = self.workers.get_mut(&worker_id) else {
             return Err(job);
         };
+        let job_id = job.id;
+        worker.state_since = Instant::now();
         worker.idle_since = None;
+        worker.current_task_id = Some(job_id);
         match worker.job_tx.send(job) {
             Ok(()) => Ok(()),
             Err(error) => {
@@ -510,14 +582,37 @@ impl Supervisor {
     }
 
     fn stats_snapshot(&self) -> PoolStats {
+        let now = Instant::now();
         let idle_worker_count = self
             .workers
             .values()
             .filter(|worker| worker.idle_since.is_some())
             .count();
+        let mut workers: Vec<WorkerStats> = self
+            .workers
+            .iter()
+            .map(|(worker_id, worker)| WorkerStats {
+                worker_id: *worker_id,
+                process_id: worker.process_id,
+                state: if worker.idle_since.is_some() {
+                    WorkerState::Idle
+                } else {
+                    WorkerState::Busy
+                },
+                current_task_id: worker.current_task_id,
+                state_for_ms: duration_ms(now.duration_since(worker.state_since)),
+                uptime_ms: duration_ms(now.duration_since(worker.started_at)),
+                handled_task_count: worker.handled_task_count,
+                last_task_duration_ms: worker.last_task_duration.map(duration_ms),
+            })
+            .collect();
+        workers.sort_unstable_by_key(|worker| worker.worker_id);
         PoolStats {
             core_pool_size: self.config.core_pool_size,
             maximum_pool_size: self.config.maximum_pool_size,
+            keep_alive_ms: duration_ms(self.keep_alive),
+            work_queue_capacity: self.config.work_queue.capacity(),
+            rejection_policy: self.config.rejected_execution_handler,
             worker_count: self.workers.len(),
             idle_worker_count,
             busy_worker_count: self.workers.len() - idle_worker_count,
@@ -526,8 +621,13 @@ impl Supervisor {
             failed_task_count: self.failed_task_count,
             rejected_task_count: self.rejected_task_count,
             caller_runs_task_count: self.caller_runs_task_count,
+            workers,
         }
     }
+}
+
+fn duration_ms(duration: Duration) -> u64 {
+    duration.as_millis().min(u64::MAX as u128) as u64
 }
 
 fn idle_tick_duration(keep_alive: Duration) -> Duration {

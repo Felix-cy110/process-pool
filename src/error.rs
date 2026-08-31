@@ -2,6 +2,12 @@ use thiserror::Error;
 
 #[derive(Debug, Clone, Error, PartialEq)]
 pub enum PoolError {
+    #[error("the process pool has not been initialized")]
+    NotInitialized,
+    #[error(
+        "the process pool is already initialized; restart the service to use another configuration"
+    )]
+    AlreadyInitialized,
     #[error("invalid pool configuration: {0}")]
     InvalidConfig(String),
     #[error("failed to start worker process: {0}")]
