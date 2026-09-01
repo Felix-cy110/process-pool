@@ -17,7 +17,7 @@ function setup(override) {
   const html = readFileSync(path.join(__dirname, "../web/index.html"), "utf8");
   const nodes = new Map([...html.matchAll(/id="(cc-[^"]+)"/g)].map(([, id]) => [id, new Element()]));
   const get = (id) => nodes.get(`cc-${id}`);
-  const agents = ["a", "b"].map((id) => ({ id, label: id, generation: 1, pid: id === "a" ? 10 : 20, cwd: `/repo/${id}`, state: "idle", pending_permissions: {}, completed_turns: 0, failed_turns: 0 }));
+  const agents = ["a", "b"].map((id, index) => ({ id, label: id, slot: index + 1, generation: 1, pid: id === "a" ? 10 : 20, cwd: `/repo/${id}`, state: "idle", current_task: null, pending_permissions: {}, completed_turns: index + 2, failed_turns: 0 }));
   const requests = [];
   const status = { enabled: true, repository_ready: true, max_agents: 4, claude_program: "claude", agents };
   const handle = async (method, params) => {
@@ -36,6 +36,27 @@ function setup(override) {
   const select = async (index = 0) => { await get("list").children[index].dispatch("click"); await flush(); };
   return { ui, get, agents, status, requests, flush, select };
 }
+
+test("process strip renders configured capacity and exposes handle, current work, and reuse on hover", async () => {
+  const { ui, get, agents, flush } = setup();
+  agents[0].state = "busy";
+  agents[0].current_task = "分析 conduit 的路由结构";
+  agents[1].state = "failed";
+  agents[1].last_error = "fixture process exited";
+  ui.setActive(true); await flush();
+  assert.equal(get("slots").children.length, 4);
+  assert.match(get("slots").children[0].className, /occupied/);
+  assert.match(get("slots").children[0].className, /is-working/);
+  assert.match(get("slots").children[1].className, /failed/);
+  assert.match(get("slots").children[2].className, /empty/);
+  assert.match(get("monitor-summary").textContent, /4 槽 · 1 绿色占用 · 1 正在工作 · 1 出错/);
+  await get("slots").children[0].dispatch("mouseenter");
+  assert.match(get("inspector-handle").textContent, /a · generation 1 · PID 10/);
+  assert.equal(get("inspector-task").textContent, "分析 conduit 的路由结构");
+  assert.match(get("inspector-reuse").textContent, /累计复用 2 次/);
+  await get("slots").children[1].dispatch("focus");
+  assert.equal(get("inspector-task").textContent, "fixture process exited");
+});
 
 test("CC only polls while selected, preserves per-Agent drafts, and never initializes the generic pool", async () => {
   const { ui, get, requests, flush, select } = setup();

@@ -1,7 +1,7 @@
 //! Stateful Claude Code processes. They use Claude's control protocol, not the
 //! stateless worker protocol: a conversation is always routed to its own PID.
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
@@ -69,6 +69,8 @@ impl AgentState {
 pub struct AgentInfo {
     pub id: String,
     pub label: String,
+    /// Stable one-based capacity slot while this server is running.
+    pub slot: usize,
     pub generation: u64,
     pub pid: Option<u32>,
     pub cwd: PathBuf,
@@ -77,6 +79,8 @@ pub struct AgentInfo {
     pub started_at_ms: u64,
     pub completed_turns: u64,
     pub failed_turns: u64,
+    /// Bounded prompt/phase summary for the local monitoring UI.
+    pub current_task: Option<String>,
     pub last_error: Option<String>,
     pub pending_permissions: BTreeMap<String, Value>,
 }
@@ -245,10 +249,23 @@ impl AgentManager {
                 }
                 if info.state.running() {
                     request(&handle, p.generation, Action::Stop).await?;
+                } else if method == "cc.stop" && info.state == AgentState::Failed {
+                    let mut record = handle.record.lock().await;
+                    record.info.state = AgentState::Stopped;
+                    record.info.current_task = None;
+                    record.event(
+                        "lifecycle",
+                        json!({"message":"错误槽位已释放；工作目录和会话文件保留"}),
+                    );
                 }
                 // A stop reply is sent only after the child has been reaped.
                 if method == "cc.restart" {
-                    if self.running_count().await >= self.0.config.max_agents {
+                    if self.slot_in_use(info.slot, Some(&p.agent_id)).await {
+                        return Err("原槽位已被其他 Agent 占用，请停止该进程后再恢复".into());
+                    }
+                    if self.occupied_slots(Some(&p.agent_id)).await.len()
+                        >= self.0.config.max_agents
+                    {
                         return Err("已达到 CC 进程上限".into());
                     }
                     let mut next = handle.record.lock().await;
@@ -273,15 +290,19 @@ impl AgentManager {
             .cloned()
             .ok_or_else(|| "未找到此 Agent".into())
     }
-    async fn running_count(&self) -> usize {
+    async fn occupied_slots(&self, except_id: Option<&str>) -> BTreeSet<usize> {
         let handles: Vec<_> = self.0.registry.lock().await.values().cloned().collect();
-        let mut count = 0;
+        let mut slots = BTreeSet::new();
         for h in handles {
-            if h.record.lock().await.info.state.running() {
-                count += 1;
+            let info = h.record.lock().await.info.clone();
+            if info.state != AgentState::Stopped && except_id != Some(info.id.as_str()) {
+                slots.insert(info.slot);
             }
         }
-        count
+        slots
+    }
+    async fn slot_in_use(&self, slot: usize, except_id: Option<&str>) -> bool {
+        self.occupied_slots(except_id).await.contains(&slot)
     }
     pub async fn status(&self) -> Result<Value> {
         let handles: Vec<_> = self.0.registry.lock().await.values().cloned().collect();
@@ -347,9 +368,11 @@ impl AgentManager {
         if *closed {
             return Err("服务正在关闭".into());
         }
-        if self.running_count().await >= self.0.config.max_agents {
+        let occupied = self.occupied_slots(None).await;
+        let Some(slot) = (1..=self.0.config.max_agents).find(|slot| !occupied.contains(slot))
+        else {
             return Err("已达到 CC 进程上限，请先停止一个 Agent".into());
-        }
+        };
         if self.0.registry.lock().await.len() >= 128 {
             return Err("本次服务最多保留 128 个 Agent 记录，请重启服务后再创建".into());
         }
@@ -386,6 +409,7 @@ impl AgentManager {
                     label
                 },
                 id: id.clone(),
+                slot,
                 generation: 1,
                 pid: None,
                 cwd,
@@ -394,6 +418,7 @@ impl AgentManager {
                 started_at_ms: now_ms(),
                 completed_turns: 0,
                 failed_turns: 0,
+                current_task: Some("启动 Claude Code 并初始化会话".into()),
                 last_error: None,
                 pending_permissions: BTreeMap::new(),
             },
@@ -447,6 +472,11 @@ impl AgentManager {
         };
         r.info.pid = child.id();
         r.info.state = AgentState::Starting;
+        r.info.current_task = Some(if r.info.session_id.is_some() {
+            "启动 Claude Code 并恢复会话".into()
+        } else {
+            "启动 Claude Code 并初始化会话".into()
+        });
         r.info.started_at_ms = now_ms();
         r.info.last_error = None;
         r.info.pending_permissions.clear();
@@ -554,6 +584,7 @@ async fn run_agent(
                                 if message["type"] == "control_response" && message["response"]["request_id"] == init_id {
                                     if message["response"]["subtype"] == "success" {
                                         ready = true; r.info.state = AgentState::Idle;
+                                        r.info.current_task = None;
                                         r.event("lifecycle", json!({"message":"会话已就绪，可发送提示词"}));
                                     } else { failure = Some(format!("Claude Code 初始化失败：{}", message["response"]["error"])); }
                                 } else if let Err(e) = handle_output(&mut r, &mut stdin, message).await { failure = Some(e); }
@@ -579,6 +610,9 @@ async fn run_agent(
     } else {
         AgentState::Failed
     };
+    if stopped {
+        r.info.current_task = None;
+    }
     r.info.last_error = failure.clone();
     r.event("lifecycle", json!({"message":if stopped { "进程已停止，工作目录和会话文件保留".to_owned() } else { failure.unwrap_or_default() }}));
     if let Some(reply) = stop_reply {
@@ -594,6 +628,7 @@ async fn apply_action(r: &mut Record, stdin: &mut ChildStdin, action: Action) ->
             }
             r.event("user", json!({"text":prompt}));
             r.info.state = AgentState::Busy;
+            r.info.current_task = Some(prompt_summary(&prompt));
             json!({"type":"user","session_id":r.info.session_id.as_deref().unwrap_or(""),"parent_tool_use_id":null,"message":{"role":"user","content":prompt}})
         }
         Action::Interrupt => {
@@ -679,6 +714,7 @@ async fn handle_output(r: &mut Record, stdin: &mut ChildStdin, message: Value) -
             }
             r.info.pending_permissions.clear();
             r.info.state = AgentState::Idle;
+            r.info.current_task = None;
         }
         _ => {}
     }
@@ -793,4 +829,13 @@ fn clip(text: &str, max: usize) -> String {
         end -= 1;
     }
     text[..end].to_owned()
+}
+
+fn prompt_summary(prompt: &str) -> String {
+    let normalized = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut summary = clip(&normalized, 240);
+    if summary.len() < normalized.len() {
+        summary.push('…');
+    }
+    summary
 }

@@ -66,6 +66,8 @@ test("CC RPC manages real fixture processes: worktrees, reuse, permissions, inte
   await wait(first.id, state("idle"));
   let second = await call("cc.create", { label: "会话二" });
   await wait(second.id, state("idle"));
+  assert.equal(first.slot, 1);
+  assert.equal(second.slot, 2);
   assert.notEqual(first.pid, second.pid);
   assert.notEqual(first.cwd, second.cwd);
   assert.ok(first.cwd.startsWith(workspace));
@@ -100,9 +102,11 @@ test("CC RPC manages real fixture processes: worktrees, reuse, permissions, inte
     first = done.agent;
   }
   await call("cc.send", { ...target(first), prompt: "hang" });
+  const busy = await wait(first.id, state("busy"));
+  assert.equal(busy.agent.current_task, "hang");
   assert.equal((await client.call("cc.send", { ...target(first), prompt: "duplicate" })).status, "rpc-error");
   await call("cc.interrupt", target(first));
-  await wait(first.id, state("idle"));
+  assert.equal((await wait(first.id, state("idle"))).agent.current_task, null);
   assert.equal((await get(first.id)).agent.pid, first.pid);
   const childBefore = (await get(first.id)).agent.completed_turns;
   await call("cc.send", { ...target(first), prompt: "child" });
@@ -123,6 +127,7 @@ test("CC RPC manages real fixture processes: worktrees, reuse, permissions, inte
   first = await call("cc.restart", target(first));
   await wait(first.id, state("idle"));
   assert.equal(first.generation, old.generation + 1);
+  assert.equal(first.slot, old.slot);
   assert.notEqual(first.pid, old.pid);
   assert.equal(first.cwd, old.cwd);
   assert.equal(first.session_id, old.session_id);
@@ -143,7 +148,16 @@ test("CC RPC manages real fixture processes: worktrees, reuse, permissions, inte
   second = await call("cc.restart", target(second));
   await wait(second.id, state("idle"));
   await call("cc.send", { ...target(second), prompt: "crash" });
-  assert.match((await wait(second.id, state("failed"))).agent.last_error, /退出|输出已关闭/);
+  const crashed = await wait(second.id, state("failed"));
+  assert.match(crashed.agent.last_error, /退出|输出已关闭/);
+  assert.equal(crashed.agent.current_task, "crash", "failed slot retains the work that was running");
+  const released = await call("cc.stop", target(crashed.agent));
+  assert.equal(released.state, "stopped");
+  assert.equal(released.current_task, null);
+  const replacement = await call("cc.create", { label: "复用释放后的槽位" });
+  assert.equal(replacement.slot, second.slot);
+  await wait(replacement.id, state("idle"));
+  await call("cc.stop", target(replacement));
 
   for (const headers of [{ origin: "https://attacker.invalid" }, { origin: "null" }, { "sec-fetch-site": "cross-site" }, { host: "attacker.invalid" }, { origin: "http://127.0.0.1:1" }]) {
     // Node fetch normalizes Host; raw HTTP ensures the rebinding test sends it literally.

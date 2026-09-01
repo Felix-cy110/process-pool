@@ -37,7 +37,7 @@ struct Args {
     #[arg(long, default_value = ".agent-workspaces")]
     agent_workspace_root: PathBuf,
 
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = 8)]
     max_cc_agents: usize,
 }
 
@@ -114,5 +114,6 @@ mod tests {
         let args = Args::try_parse_from(["process-pool-server"]).unwrap();
         assert!(args.config.is_none());
         assert_eq!(args.listen.port(), 7788);
+        assert_eq!(args.max_cc_agents, 8);
     }
 }

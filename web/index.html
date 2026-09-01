@@ -289,6 +289,24 @@
       </div>
       </section>
       <section id="agents-view" role="tabpanel" aria-labelledby="agents-tab" tabindex="0" hidden>
+        <section class="panel cc-process-monitor" aria-labelledby="cc-monitor-title">
+          <div class="panel-heading">
+            <div><span class="section-kicker">PROCESS REUSE MAP</span><h2 id="cc-monitor-title">CC 进程复用监控</h2></div>
+            <span id="cc-monitor-summary" class="cc-monitor-summary">等待进程状态…</span>
+          </div>
+          <div class="cc-monitor-legend" aria-label="进程状态图例">
+            <span><i class="cc-legend-occupied"></i>已占用 / 可复用</span>
+            <span><i class="cc-legend-empty"></i>空槽位</span>
+            <span><i class="cc-legend-failed"></i>进程出错</span>
+            <span><i class="cc-legend-working"></i>动态光点表示正在工作</span>
+          </div>
+          <div id="cc-slots" class="cc-process-slots" role="group" aria-label="CC 进程容量槽位"></div>
+          <div id="cc-inspector" class="cc-process-inspector" aria-live="polite">
+            <div><span>唯一句柄</span><strong id="cc-inspector-handle">—</strong></div>
+            <div><span>当前运行</span><strong id="cc-inspector-task">将鼠标移到进程方块上查看</strong></div>
+            <div><span>复用记录</span><strong id="cc-inspector-reuse">—</strong></div>
+          </div>
+        </section>
         <section class="panel cc-setup">
           <div class="panel-heading">
             <div><span class="section-kicker">LOCAL CLAUDE CODE</span><h2>Agent 工作空间</h2></div>

@@ -120,10 +120,10 @@ JSON 参数编辑框限制为 64 KiB。`timeout_ms` 是 worker 的任务执行�
 可复制的启动命令（先在旧服务终端 Ctrl+C；不带 `--config`）：
 
 ```bash
-(cd /Users/chenyang/process-pool && cargo run --bin process-pool-server -- --listen 127.0.0.1:7788 --max-cc-agents 4)
+(cd /Users/chenyang/process-pool && cargo run --bin process-pool-server -- --listen 127.0.0.1:7788 --max-cc-agents 8)
 ```
 
-可选本地配置：`--claude-program /绝对路径/claude`、`--agent-workspace-root /绝对路径/工作空间`。`--max-cc-agents` 默认为 4，可设为 1–64；不会预创建这些进程。程序从服务的 PATH 查找 `claude`，无法启动时请核对服务进程的 PATH，而不是让 Web 传任意命令。
+可选本地配置：`--claude-program /绝对路径/claude`、`--agent-workspace-root /绝对路径/工作空间`。`--max-cc-agents` 默认为 8，可设为 1–64；它决定进程监控带的槽位数，但不会预创建进程。绿色块表示槽位存在可复用进程，灰色表示空槽，红色表示进程出错；移动鼠标或键盘聚焦方块可查看唯一 Agent 句柄、PID、当前任务摘要和累计复用轮次。程序从服务的 PATH 查找 `claude`，无法启动时请核对服务进程的 PATH，而不是让 Web 传任意命令。
 
 管理接口仍为同源 `POST /rpc`：
 

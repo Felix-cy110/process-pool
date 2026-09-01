@@ -8,7 +8,7 @@
   const running = (state) => !["stopped", "failed"].includes(state);
   function mount({ document: doc = document, client, schedule = setInterval }) {
     const el = (id) => doc.getElementById(`cc-${id}`);
-    let active = false, polling = false, acting = false, selected = null, revision = 0;
+    let active = false, polling = false, acting = false, selected = null, inspected, revision = 0;
     let status = null, detail = null;
     const cursors = new Map(), logs = new Map(), drafts = new Map();
     const node = (tag, text, cls) => { const n = doc.createElement(tag); n.textContent = text; if (cls) n.className = cls; return n; };
@@ -24,8 +24,63 @@
       el("send").disabled = acting || detail?.state !== "idle";
       el("prompt").disabled = !selected;
       el("interrupt").disabled = acting || !["busy", "awaiting_permission"].includes(detail?.state);
-      el("stop").disabled = acting || !detail || !running(detail.state);
+      el("stop").disabled = acting || !detail || detail.state === "stopped";
       el("restart").disabled = acting || !detail || running(detail.state);
+    }
+    function taskDescription(agent) {
+      if (!agent) return "将鼠标移到进程方块上查看";
+      if (agent.current_task) return agent.current_task;
+      return { idle: "空闲，等待下一轮任务复用", failed: agent.last_error || "进程异常退出", starting: "正在启动 Claude Code", stopped: "槽位已释放" }[agent.state]
+        || labels[agent.state] || agent.state;
+    }
+    function inspect(agent) {
+      el("inspector-handle").textContent = agent ? `${agent.id} · generation ${agent.generation} · PID ${agent.pid ?? "—"}` : "—";
+      el("inspector-task").textContent = taskDescription(agent);
+      el("inspector-reuse").textContent = agent
+        ? `已完成 ${agent.completed_turns} 轮 · 失败 ${agent.failed_turns} 轮 · 累计复用 ${agent.completed_turns + agent.failed_turns} 次`
+        : "—";
+    }
+    function releaseInspection(visible) {
+      inspected = undefined;
+      inspect((status?.agents || []).find((agent) => agent.id === selected) || visible[0] || null);
+    }
+    function renderMonitor() {
+      const capacity = status?.max_agents || 0;
+      const visible = (status?.agents || []).filter((agent) => agent.state !== "stopped");
+      const agentsBySlot = new Map(visible.map((agent) => [agent.slot, agent]));
+      const workingCount = visible.filter((agent) => ["starting", "busy", "awaiting_permission", "interrupting"].includes(agent.state)).length;
+      const failedCount = visible.filter((agent) => agent.state === "failed").length;
+      el("monitor-summary").textContent = capacity
+        ? `${capacity} 槽 · ${visible.length - failedCount} 绿色占用 · ${workingCount} 正在工作 · ${failedCount} 出错`
+        : "CC 管理未启用";
+      el("slots").replaceChildren();
+      for (let slot = 1; slot <= capacity; slot += 1) {
+        const agent = agentsBySlot.get(slot);
+        if (!agent) {
+          const empty = node("div", "", "cc-process-slot cc-process-slot-empty");
+          empty.setAttribute("aria-label", `槽位 ${slot}，未占用`);
+          empty.append(node("strong", String(slot).padStart(2, "0")), node("span", "EMPTY"));
+          empty.addEventListener("mouseenter", () => { inspected = null; inspect(null); });
+          empty.addEventListener("mouseleave", () => releaseInspection(visible));
+          el("slots").append(empty);
+          continue;
+        }
+        const isFailed = agent.state === "failed";
+        const isWorking = ["starting", "busy", "awaiting_permission", "interrupting"].includes(agent.state);
+        const block = node("button", "", `cc-process-slot ${isFailed ? "cc-process-slot-failed" : "cc-process-slot-occupied"}${isWorking ? " is-working" : ""}`);
+        block.type = "button";
+        block.setAttribute("aria-label", `槽位 ${slot}，${agent.label}，${labels[agent.state] || agent.state}。唯一句柄 ${agent.id}。${taskDescription(agent)}`);
+        block.setAttribute("aria-pressed", String(agent.id === selected));
+        block.append(node("strong", String(slot).padStart(2, "0")), node("span", labels[agent.state] || agent.state), node("small", agent.id.slice(-8)));
+        block.addEventListener("mouseenter", () => { inspected = agent.id; inspect(agent); });
+        block.addEventListener("mouseleave", () => releaseInspection(visible));
+        block.addEventListener("focus", () => { inspected = agent.id; inspect(agent); });
+        block.addEventListener("blur", () => releaseInspection(visible));
+        block.addEventListener("click", () => select(agent.id));
+        el("slots").append(block);
+      }
+      inspect(inspected === null ? null : visible.find((agent) => agent.id === inspected)
+        || (status?.agents || []).find((agent) => agent.id === selected) || visible[0] || null);
     }
     function renderList() {
       el("list").replaceChildren();
@@ -88,7 +143,7 @@
           ? `${next.repository_ready ? "项目已就绪" : "项目未准备"} · 本机命令 ${next.claude_program} · 同时最多 ${next.max_agents} 个 CC 进程`
           : next.reason;
         el("repository").textContent = next.repository_path || "";
-        renderList(); controls();
+        renderMonitor(); renderList(); controls();
         if (id) {
           const result = await call("cc.get", { agent_id: id, after_event_id: cursors.get(id) || 0 });
           if (version !== revision || id !== selected) return;
@@ -110,9 +165,10 @@
     function select(id) {
       if (selected) drafts.set(selected, el("prompt").value);
       selected = id; revision += 1;
+      inspected = id;
       detail = status?.agents.find((agent) => agent.id === id) || null;
       el("prompt").value = drafts.get(id) || ""; el("stream").textContent = "";
-      renderList(); renderDetail();
+      renderMonitor(); renderList(); renderDetail();
       void refresh();
     }
     async function action(method, params, success) {
@@ -131,7 +187,7 @@
       event.preventDefault();
       if (!el("create-form").reportValidity()) return;
       return action("cc.create", { label: el("label").value }, (agent) => {
-        selected = agent.id; detail = agent; revision += 1; el("prompt").value = ""; el("stream").textContent = ""; renderDetail();
+        selected = agent.id; detail = agent; revision += 1; el("prompt").value = ""; el("stream").textContent = ""; renderMonitor(); renderDetail();
       });
     });
     el("prompt").addEventListener("input", () => { if (selected) drafts.set(selected, el("prompt").value); });
@@ -149,7 +205,7 @@
       if (!detail) return;
       return action(`cc.${method}`, { agent_id: detail.id, generation: detail.generation });
     });
-    controls(); renderDetail();
+    controls(); renderMonitor(); renderDetail();
     schedule(() => { void refresh(); }, 1000);
     return { setActive(value) { active = value; if (active) void refresh(); }, refresh };
   }
